@@ -1,0 +1,24 @@
+from typing import Protocol
+
+
+class LlmError(Exception):
+    """Base for all LLM failures. Callers catch these, never a provider's own errors (httpx, SDKs...)."""
+
+
+class LlmUnavailableError(LlmError):
+    """The LLM could not be reached or returned an error (server down, model not pulled, bad response)."""
+
+
+class LlmTimeoutError(LlmError):
+    """The LLM did not answer within the configured timeout."""
+
+
+class LlmClient(Protocol):
+    """What the RAG service relies on. Any LLM provider (Ollama, Claude, ...) must offer this.
+    Implementations must raise LlmUnavailableError / LlmTimeoutError instead of their own errors."""
+
+    model_name: str
+
+    def generate(self, system_prompt: str, user_prompt: str) -> str: ...
+
+    def close(self) -> None: ...

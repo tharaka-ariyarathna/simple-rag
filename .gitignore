@@ -1,0 +1,12 @@
+# Virtual environment
+.venv/
+
+# Python bytecode caches
+__pycache__/
+*.pyc
+
+# Secrets (copy .env.example to .env and fill in)
+.env
+
+# Local data
+data/index/
