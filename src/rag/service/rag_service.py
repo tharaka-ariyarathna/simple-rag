@@ -39,15 +39,12 @@ class RagService:
         self.prompt_builder = prompt_builder
         self.llm_client = llm_client
 
+    def list_folders(self) -> dict[str, int]:
+        """Folder name -> chunk count, for the active embedding model."""
+        return self.repository.count_by_folder(self.embedder.model_name)
+
     def answer_question(self, question: str, folder: str | None, top_k: int) -> RagAnswer:
-        query_vector = self.embedder.embed_query(question)
-        chunks = self.repository.search_similar(
-            query_vector,
-            embedding_model=self.embedder.model_name,
-            dimension=self.embedder.dimension,
-            top_k=top_k,
-            folder=folder,
-        )
+        chunks = self.search_chunks(question, folder, top_k)
         if not chunks:
             return RagAnswer(answer=NO_RELEVANT_CONTEXT_ANSWER)
         prompt = self.prompt_builder.build(question, chunks)
@@ -58,3 +55,14 @@ class RagService:
             if file_name not in sources_by_file:
                 sources_by_file[file_name] = SourceReference(file_name, chunk["folder"], chunk["similarity"])
         return RagAnswer(answer=answer_text, sources=list(sources_by_file.values()))
+
+    def search_chunks(self, question: str, folder: str | None, top_k: int) -> list[dict]:
+        """Retrieval only (no LLM): the most relevant chunks above the similarity threshold, best first."""
+        query_vector = self.embedder.embed_query(question)
+        return self.repository.search_similar(
+            query_vector,
+            embedding_model=self.embedder.model_name,
+            dimension=self.embedder.dimension,
+            top_k=top_k,
+            folder=folder,
+        )

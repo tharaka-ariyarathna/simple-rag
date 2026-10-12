@@ -50,3 +50,13 @@ Rules:
 # API error responses (details stay generic; full error goes to the server log)
 LLM_UNAVAILABLE_DETAIL = "The language model is unavailable. Please try again later."
 LLM_TIMEOUT_DETAIL = "The language model took too long to answer. Please try again."
+
+# MCP server (streamable HTTP; port differs from the FastAPI app's 8000)
+MCP_SERVER_NAME = "simple-rag"
+MCP_SERVER_INSTRUCTIONS = (
+    "Searches the user's indexed personal documents. Use list_folders to see which folders exist, "
+    "search_documents to read relevant passages, or answer_question for an answer written by this server's LLM."
+)
+MCP_HOST = "127.0.0.1"  # localhost only: no auth yet, so never expose this on the network
+MCP_PORT = 8001
+MCP_PATH = "/mcp"
