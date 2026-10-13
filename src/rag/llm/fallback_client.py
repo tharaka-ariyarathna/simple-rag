@@ -1,5 +1,5 @@
 import logging
-from rag.llm.base import LlmClient, LlmError
+from rag.llm.base import LlmClient, LlmError, LlmResult
 
 logger = logging.getLogger(__name__)
 
@@ -12,7 +12,7 @@ class FallbackLlmClient:
         self.fallback_client = fallback_client
         self.model_name = f"{primary_client.model_name} (fallback: {fallback_client.model_name})"
 
-    def generate(self, system_prompt: str, user_prompt: str) -> str:
+    def generate(self, system_prompt: str, user_prompt: str) -> LlmResult:
         try:
             return self.primary_client.generate(system_prompt, user_prompt)
         except LlmError as error:

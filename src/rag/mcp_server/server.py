@@ -91,7 +91,7 @@ def answer_question(ctx: Context, question: Question, folder: Folder = None, top
     when you can answer yourself). The answer cites its sources as [n]; if nothing relevant is found,
     it says so instead of guessing. Optionally limit the search to one folder."""
     try:
-        rag_answer = get_rag_service(ctx).answer_question(question.strip(), folder, top_k)
+        rag_answer = get_rag_service(ctx).answer_question(question.strip(), folder, top_k, entry_point="mcp")
     except LlmTimeoutError as error:
         logger.warning("LLM timeout: %s", error)
         raise ToolError(LLM_TIMEOUT_DETAIL) from error  # generic message to the caller; details stay in the log

@@ -84,6 +84,15 @@ class ChunkRepository:
                  "top_k": top_k, "min_similarity": min_similarity},
             ).fetchall()
 
+    def list_chunks(self, embedding_model: str) -> list[dict]:
+        """Every chunk of one model, in document order (used by evaluation, which reads all of them)."""
+        with self.database.connection() as connection:
+            return connection.execute(
+                """SELECT source, folder, chunk_index, content FROM chunks
+                   WHERE embedding_model = %s ORDER BY source, chunk_index""",
+                (embedding_model,),
+            ).fetchall()
+
     def delete_by_source(self, source: str) -> int:
         with self.database.connection() as connection:
             return connection.execute("DELETE FROM chunks WHERE source = %s", (source,)).rowcount

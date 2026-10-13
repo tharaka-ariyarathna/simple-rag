@@ -1,0 +1,17 @@
+[
+  {"question": "What is the capital of Peru?", "category": "out_of_domain"},
+  {"question": "How long should I boil an egg?", "category": "out_of_domain"},
+  {"question": "Who won the FIFA World Cup in 2018?", "category": "out_of_domain"},
+  {"question": "Explain how photosynthesis works.", "category": "out_of_domain"},
+  {"question": "What is the current price of Bitcoin?", "category": "out_of_domain"},
+  {"question": "Write me a poem about the ocean.", "category": "out_of_domain"},
+  {"question": "What was Tharaka's salary at Sriq?", "category": "near_miss"},
+  {"question": "What is Tharaka's home address?", "category": "near_miss"},
+  {"question": "What is Tharaka's blood type?", "category": "near_miss"},
+  {"question": "Which university did Tharaka's manager at Sriq attend?", "category": "near_miss"},
+  {"question": "How many days of annual leave did Tharaka have at Sriq?", "category": "near_miss"},
+  {"question": "What was the monthly AWS bill for the Lambda functions Tharaka built?", "category": "near_miss"},
+  {"question": "What is Tharaka's favourite programming language and why?", "category": "near_miss"},
+  {"question": "Did Tharaka ever work with Kubernetes on Google Cloud?", "category": "near_miss"},
+  {"question": "What grade did Tharaka get in his final year thesis?", "category": "near_miss"}
+]

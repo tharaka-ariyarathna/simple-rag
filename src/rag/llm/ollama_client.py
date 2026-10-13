@@ -7,7 +7,7 @@ from rag.constants import (
     LLM_TEMPERATURE,
     LLM_CONTEXT_TOKENS
 )
-from rag.llm.base import LlmTimeoutError, LlmUnavailableError
+from rag.llm.base import LlmResult, LlmTimeoutError, LlmUnavailableError
 
 
 class OllamaLlmClient:
@@ -24,7 +24,7 @@ class OllamaLlmClient:
         self.timeout_seconds = timeout_seconds
         self.http_client = httpx.Client(base_url=base_url, timeout=timeout_seconds)
 
-    def generate(self, system_prompt: str, user_prompt: str) -> str:
+    def generate(self, system_prompt: str, user_prompt: str) -> LlmResult:
         request_body = {
         "model": self.model_name,
         "messages": [
@@ -38,7 +38,13 @@ class OllamaLlmClient:
         try:
             response = self.http_client.post("/api/chat", json=request_body)
             response.raise_for_status()  # 4xx/5xx -> HTTPStatusError (e.g. 404 when the model isn't pulled)
-            return response.json()["message"]["content"]
+            response_body = response.json()
+            return LlmResult(
+                text=response_body["message"]["content"],
+                model=self.model_name,
+                input_tokens=response_body.get("prompt_eval_count"),
+                output_tokens=response_body.get("eval_count"),
+            )
         except httpx.TimeoutException as error:
             raise LlmTimeoutError(
                 f"Ollama did not answer within {self.timeout_seconds} seconds"
