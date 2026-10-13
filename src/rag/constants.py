@@ -25,7 +25,7 @@ NO_RELEVANT_CONTEXT_ANSWER = "I couldn't find that in the documents."
 
 # LLM
 OLLAMA_BASE_URL = "http://localhost:11434"
-OLLAMA_MODEL = "qwen2.5:7b"
+OLLAMA_MODEL = "llama3.2:3b"
 LLM_TIMEOUT_SECONDS = 120  # 3B model on CPU can be slow for long answers
 LLM_CONTEXT_TOKENS=4096
 LLM_TEMPERATURE=0.1  # low temperature = more deterministic, less creative
@@ -37,15 +37,6 @@ GEMINI_BASE_URL = "https://generativelanguage.googleapis.com"
 QUESTION_MAX_LENGTH = 1000
 FOLDER_MAX_LENGTH = 200
 TOP_K_MAX = 20
-
-# Prompt
-CONTEXT_BLOCK_SEPARATOR = "\n\n"
-SYSTEM_PROMPT = f"""You are an assistant that answers questions using ONLY the provided context.
-Rules:
-- Use only facts from the context. Do not use outside knowledge.
-- If the context does not contain the answer, reply exactly: "{NO_RELEVANT_CONTEXT_ANSWER}"
-- Cite the sources you used with their numbers, like [1] or [2][3].
-- Be concise."""
 
 # API error responses (details stay generic; full error goes to the server log)
 LLM_UNAVAILABLE_DETAIL = "The language model is unavailable. Please try again later."
@@ -60,3 +51,16 @@ MCP_SERVER_INSTRUCTIONS = (
 MCP_HOST = "127.0.0.1"  # localhost only: no auth yet, so never expose this on the network
 MCP_PORT = 8001
 MCP_PATH = "/mcp"
+
+# Evaluation
+EVAL_MIN_HIT_RATE = 0.8  # retrieval eval passes when hit@k reaches this (starting guess, tune after the first run)
+EVAL_MIN_MRR = 0.6
+EVAL_MAX_REGRESSION = 0.03  # fails when a metric drops more than this against the previous run
+EVAL_WORST_MISSES_SHOWN = 10
+QUESTIONS_PER_CHUNK = 2
+QUESTION_GENERATION_DELAY_SECONDS = 1.0  # pause between generator calls to stay under rate limits
+EVAL_ANSWERABLE_SAMPLE = 20  # synthetic questions run through the full pipeline to measure false refusals
+UNANSWERABLE_QUESTIONS_PATH = "evaluation/data/unanswerable.json"  # relative to the rag package
+EVAL_MAX_HALLUCINATION_RATE = 0.1  # unanswerable questions that got an answer (starting guess)
+EVAL_MAX_FALSE_REFUSAL_RATE = 0.3  # answerable questions that were refused (starting guess)
+EVAL_RANDOM_SEED = 42  # same sample of answerable questions every run, so runs stay comparable

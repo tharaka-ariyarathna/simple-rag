@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 from pathlib import Path
-from rag.constants import SYSTEM_PROMPT, CONTEXT_BLOCK_SEPARATOR
+from rag.prompt_constants import SYSTEM_PROMPT, CONTEXT_BLOCK_SEPARATOR
 
 
 @dataclass

@@ -1,6 +1,6 @@
 import httpx
 from rag.constants import GEMINI_BASE_URL, GEMINI_MODEL, LLM_TEMPERATURE, LLM_TIMEOUT_SECONDS
-from rag.llm.base import LlmTimeoutError, LlmUnavailableError
+from rag.llm.base import LlmResult, LlmTimeoutError, LlmUnavailableError
 
 
 class GeminiLlmClient:
@@ -20,7 +20,7 @@ class GeminiLlmClient:
             base_url=base_url, timeout=timeout_seconds, headers={"x-goog-api-key": api_key}
         )
 
-    def generate(self, system_prompt: str, user_prompt: str) -> str:
+    def generate(self, system_prompt: str, user_prompt: str) -> LlmResult:
         request_body = {
             "system_instruction": {"parts": [{"text": system_prompt}]},
             "contents": [{"role": "user", "parts": [{"text": user_prompt}]}],
@@ -30,7 +30,14 @@ class GeminiLlmClient:
         try:
             response = self.http_client.post(f"/v1beta/models/{self.model_name}:generateContent", json=request_body)
             response.raise_for_status()  # 400 bad request, 403 bad key, 429 quota...
-            return response.json()["candidates"][0]["content"]["parts"][0]["text"]
+            response_body = response.json()
+            usage = response_body.get("usageMetadata", {})
+            return LlmResult(
+                text=response_body["candidates"][0]["content"]["parts"][0]["text"],
+                model=self.model_name,
+                input_tokens=usage.get("promptTokenCount"),
+                output_tokens=usage.get("candidatesTokenCount"),
+            )
         except httpx.TimeoutException as error:
             raise LlmTimeoutError(f"Gemini did not answer within {self.timeout_seconds} seconds") from error
         except httpx.HTTPStatusError as error:
