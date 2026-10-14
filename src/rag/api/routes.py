@@ -2,8 +2,8 @@ import logging
 from dataclasses import asdict
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from rag.api.schemas import ChatRequest, ChatResponse
-from rag.constants import LLM_TIMEOUT_DETAIL, LLM_UNAVAILABLE_DETAIL
-from rag.llm.base import LlmTimeoutError, LlmUnavailableError
+from rag.constants import INTERNAL_ERROR_DETAIL, LLM_TIMEOUT_DETAIL, LLM_UNAVAILABLE_DETAIL
+from rag.llm.base import LlmConfigurationError, LlmTimeoutError, LlmUnavailableError
 from rag.service.rag_service import RagService
 
 logger = logging.getLogger(__name__)
@@ -33,4 +33,7 @@ def chat(chat_request: ChatRequest, rag_service: RagService = Depends(get_rag_se
     except LlmUnavailableError as error:
         logger.error("LLM unavailable: %s", error)
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=LLM_UNAVAILABLE_DETAIL) from error
+    except LlmConfigurationError as error:  # bad key, bad request, unknown model: our fault, not the caller's
+        logger.error("LLM misconfigured: %s", error)
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=INTERNAL_ERROR_DETAIL) from error
     return ChatResponse(**asdict(rag_answer))  # refusal_reason is ignored: not a ChatResponse field

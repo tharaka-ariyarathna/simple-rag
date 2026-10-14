@@ -1,6 +1,7 @@
 import json
 import logging
 import re
+from dataclasses import dataclass
 from rag.evaluation.text_matching import contains_evidence
 from rag.llm.base import LlmClient
 from rag.llm.call_context import llm_call_context
@@ -15,19 +16,24 @@ class QuestionGenerationError(Exception):
     """The LLM answered, but not with usable JSON. The chunk stays unprocessed and is retried next run."""
 
 
+@dataclass
+class GeneratedQuestions:
+    questions: list[dict]  # [{question, expected_answer, evidence}]; empty = nothing worth asking
+    model: str  # the model that actually wrote them (LlmResult.model), not the client's configured name
+
+
 class QuestionGenerator:
     """Asks the LLM for test questions about one chunk. Knows nothing about the database."""
 
     def __init__(self, llm_client: LlmClient):
         self.llm_client = llm_client
 
-    def generate(self, chunk_content: str) -> list[dict]:
-        """Returns [{question, expected_answer, evidence}]. Empty means the chunk has nothing worth asking.
-        Raises LlmError when the LLM fails and QuestionGenerationError when its reply is not usable."""
+    def generate(self, chunk_content: str) -> GeneratedQuestions:
+        """Raises LlmError when the LLM fails and QuestionGenerationError when its reply is not usable."""
         user_prompt = QUESTION_GENERATION_USER_TEMPLATE.format(passage=chunk_content.strip())
         with llm_call_context("question_generation"):
             result = self.llm_client.generate(QUESTION_GENERATION_SYSTEM_PROMPT, user_prompt)
-        return self.parse_questions(result.text, chunk_content)
+        return GeneratedQuestions(questions=self.parse_questions(result.text, chunk_content), model=result.model)
 
     def parse_questions(self, reply_text: str, chunk_content: str) -> list[dict]:
         reply_json = self.extract_json(reply_text)

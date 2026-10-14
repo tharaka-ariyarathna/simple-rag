@@ -24,14 +24,22 @@ MIN_SIMILARITY = 0.5  # chunks scoring below this are treated as not relevant
 NO_RELEVANT_CONTEXT_ANSWER = "I couldn't find that in the documents."
 
 # LLM
+# Answering tries these providers in order (override with ANSWER_LLM_CHAIN in .env). Question generation is local only.
+DEFAULT_ANSWER_LLM_CHAIN = "groq,openrouter,ollama"
+# Model ids are defaults; GROQ_MODEL, OPENROUTER_MODEL, OLLAMA_MODEL and GEMINI_MODEL in .env override them
+GROQ_BASE_URL = "https://api.groq.com/openai/v1"
+GROQ_MODEL = "openai/gpt-oss-120b"
+OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+OPENROUTER_MODEL = "nvidia/nemotron-3-super-120b-a12b:free"
 OLLAMA_BASE_URL = "http://localhost:11434"
 OLLAMA_MODEL = "llama3.2:3b"
-LLM_TIMEOUT_SECONDS = 120  # 3B model on CPU can be slow for long answers
+GEMINI_MODEL = "gemini-3.8-flash"  # not in the default chain; add "gemini" to ANSWER_LLM_CHAIN to use it
+GEMINI_BASE_URL = "https://generativelanguage.googleapis.com"
+CLOUD_LLM_TIMEOUT_SECONDS = 60
+LOCAL_LLM_TIMEOUT_SECONDS = 240  # 3B model on CPU can be slow for long answers
+LLM_RETRY_DELAYS_SECONDS = (2, 4, 8)  # local question generation: 3 retries, waiting longer each time
 LLM_CONTEXT_TOKENS=4096
 LLM_TEMPERATURE=0.1  # low temperature = more deterministic, less creative
-QWEN_TIMEOUT_SECONDS = 240
-GEMINI_MODEL = "gemini-3.8-flash"
-GEMINI_BASE_URL = "https://generativelanguage.googleapis.com"
 
 # API request limits
 QUESTION_MAX_LENGTH = 1000
@@ -41,6 +49,7 @@ TOP_K_MAX = 20
 # API error responses (details stay generic; full error goes to the server log)
 LLM_UNAVAILABLE_DETAIL = "The language model is unavailable. Please try again later."
 LLM_TIMEOUT_DETAIL = "The language model took too long to answer. Please try again."
+INTERNAL_ERROR_DETAIL = "Internal server error."  # LlmConfigurationError: our fault (bad key, bad request)
 
 # MCP server (streamable HTTP; port differs from the FastAPI app's 8000)
 MCP_SERVER_NAME = "simple-rag"
@@ -58,7 +67,7 @@ EVAL_MIN_MRR = 0.6
 EVAL_MAX_REGRESSION = 0.03  # fails when a metric drops more than this against the previous run
 EVAL_WORST_MISSES_SHOWN = 10
 QUESTIONS_PER_CHUNK = 2
-QUESTION_GENERATION_DELAY_SECONDS = 1.0  # pause between generator calls to stay under rate limits
+QUESTION_GENERATION_DELAY_SECONDS = 0.0  # pause between generator calls; 0 because generation runs locally
 EVAL_ANSWERABLE_SAMPLE = 20  # synthetic questions run through the full pipeline to measure false refusals
 UNANSWERABLE_QUESTIONS_PATH = "evaluation/data/unanswerable.json"  # relative to the rag package
 EVAL_MAX_HALLUCINATION_RATE = 0.1  # unanswerable questions that got an answer (starting guess)

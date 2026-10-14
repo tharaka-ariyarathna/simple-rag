@@ -1,6 +1,6 @@
 import logging
 import time
-from rag.llm.base import LlmClient, LlmResult, LlmTimeoutError, LlmUnavailableError
+from rag.llm.base import LlmClient, LlmConfigurationError, LlmResult, LlmTimeoutError, LlmUnavailableError
 from rag.llm.call_context import current_purpose, current_rag_request_id
 from rag.repository.ledger_repository import LedgerRepository
 
@@ -10,13 +10,13 @@ logger = logging.getLogger(__name__)
 class LoggingLlmClient:
     """LlmClient decorator: records every call (latency, tokens, model, success) in the llm_calls table.
 
-    Wrap each real client (Gemini, Ollama), not the FallbackLlmClient, so a fallback shows as two rows:
-    the failed primary and the fallback that answered."""
+    Wrap each real client (Groq, OpenRouter, Ollama...), not the FallbackLlmClient, so a fallback shows as one
+    row per provider tried: the failed ones and the one that answered."""
 
     def __init__(self, inner_client: LlmClient, provider: str, role: str, ledger_repository: LedgerRepository):
         self.inner_client = inner_client
         self.provider = provider
-        self.role = role  # primary / fallback
+        self.role = role  # primary / fallback_1 / fallback_2 ...
         self.ledger_repository = ledger_repository
         self.model_name = inner_client.model_name
 
@@ -55,6 +55,8 @@ class LoggingLlmClient:
             return "timeout"
         if isinstance(error, LlmUnavailableError):
             return "unavailable"
+        if isinstance(error, LlmConfigurationError):
+            return "configuration"
         return type(error).__name__
 
     def close(self) -> None:

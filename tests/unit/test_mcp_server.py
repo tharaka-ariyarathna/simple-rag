@@ -4,8 +4,8 @@ retested here."""
 from types import SimpleNamespace
 import pytest
 from mcp.server.mcpserver.exceptions import ToolError
-from rag.constants import LLM_TIMEOUT_DETAIL, LLM_UNAVAILABLE_DETAIL
-from rag.llm.base import LlmTimeoutError, LlmUnavailableError
+from rag.constants import INTERNAL_ERROR_DETAIL, LLM_TIMEOUT_DETAIL, LLM_UNAVAILABLE_DETAIL
+from rag.llm.base import LlmConfigurationError, LlmTimeoutError, LlmUnavailableError
 from rag.mcp_server import server
 from rag.service.rag_service import RagAnswer, SourceReference
 from tests.fakes import chunk_row
@@ -65,6 +65,7 @@ def test_answer_question_returns_the_answer_as_a_dict_and_marks_the_entry_point(
 @pytest.mark.parametrize("error, message", [
     (LlmTimeoutError("internal detail"), LLM_TIMEOUT_DETAIL),
     (LlmUnavailableError("internal detail"), LLM_UNAVAILABLE_DETAIL),
+    (LlmConfigurationError("internal detail"), INTERNAL_ERROR_DETAIL),
 ])
 def test_llm_failures_become_tool_errors_with_a_generic_message(error, message):
     with pytest.raises(ToolError) as raised:

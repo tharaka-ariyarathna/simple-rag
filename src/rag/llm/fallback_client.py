@@ -1,25 +1,36 @@
 import logging
-from rag.llm.base import LlmClient, LlmError, LlmResult
+from rag.llm.base import RECOVERABLE_LLM_ERRORS, LlmClient, LlmConfigurationError, LlmResult
 
 logger = logging.getLogger(__name__)
 
 
 class FallbackLlmClient:
-    """LlmClient that tries a primary client and, if it fails, answers with a fallback client."""
+    """LlmClient that tries each client in order until one answers.
 
-    def __init__(self, primary_client: LlmClient, fallback_client: LlmClient):
-        self.primary_client = primary_client
-        self.fallback_client = fallback_client
-        self.model_name = f"{primary_client.model_name} (fallback: {fallback_client.model_name})"
+    Only LlmUnavailableError / LlmTimeoutError move on to the next client. LlmConfigurationError (bad key,
+    bad request, unknown model) is our mistake, so no other provider can fix it: it is raised at once."""
+
+    def __init__(self, clients: list[LlmClient]):
+        if not clients:
+            raise ValueError("FallbackLlmClient needs at least one client")
+        self.clients = clients
+        self.model_name = " -> ".join(client.model_name for client in clients)
 
     def generate(self, system_prompt: str, user_prompt: str) -> LlmResult:
-        try:
-            return self.primary_client.generate(system_prompt, user_prompt)
-        except LlmError as error:
-            logger.warning("Primary LLM '%s' failed, using fallback '%s': %s",
-                           self.primary_client.model_name, self.fallback_client.model_name, error)
-            return self.fallback_client.generate(system_prompt, user_prompt)  # its LlmError reaches the route -> 503/504
+        last_position = len(self.clients) - 1
+        for position, client in enumerate(self.clients):
+            try:
+                return client.generate(system_prompt, user_prompt)
+            except LlmConfigurationError as error:
+                logger.error("LLM '%s' is misconfigured, not falling back: %s", client.model_name, error)
+                raise
+            except RECOVERABLE_LLM_ERRORS as error:
+                if position == last_position:
+                    raise  # every client failed: the last error reaches the route -> 503/504
+                logger.warning("LLM '%s' failed, trying '%s': %s",
+                               client.model_name, self.clients[position + 1].model_name, error)
+        raise AssertionError("unreachable: the loop returns or raises")
 
     def close(self) -> None:
-        self.primary_client.close()
-        self.fallback_client.close()
+        for client in self.clients:
+            client.close()

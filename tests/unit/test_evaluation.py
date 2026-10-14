@@ -4,7 +4,7 @@ from rag.constants import EVAL_MAX_REGRESSION, EVAL_MIN_HIT_RATE
 from rag.evaluation import matching_eval, retrieval_eval, unanswerable_eval
 from rag.evaluation.retrieval_eval import RetrievalCase
 from rag.evaluation.text_matching import contains_evidence, normalize_text
-from rag.llm.base import LlmUnavailableError
+from rag.llm.base import LlmConfigurationError, LlmUnavailableError
 from rag.service.rag_service import RagAnswer
 from tests.fakes import chunk_row
 
@@ -121,6 +121,10 @@ class TestUnanswerableEval:
 
         failing = Service(error=LlmUnavailableError("down"))
         assert unanswerable_eval.ask(failing, case, 5, eval_run_id=3)["outcome"] == "error"
+
+        misconfigured = Service(error=LlmConfigurationError("401 bad key"))
+        with pytest.raises(LlmConfigurationError):  # stops the whole run instead of failing every question
+            unanswerable_eval.ask(misconfigured, case, 5, eval_run_id=3)
 
     def test_metrics_split_hallucinations_from_false_refusals_and_skip_errors(self):
         results = [

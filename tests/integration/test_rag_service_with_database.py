@@ -2,7 +2,8 @@
 FallbackLlmClient and LoggingLlmClient. Only the embedding model and the LLM providers are fakes."""
 import pytest
 from rag.constants import NO_RELEVANT_CONTEXT_ANSWER
-from rag.llm.base import LlmUnavailableError
+from rag.bootstrap import fallback_role
+from rag.llm.base import LlmConfigurationError, LlmTimeoutError, LlmUnavailableError
 from rag.llm.fallback_client import FallbackLlmClient
 from rag.llm.logging_client import LoggingLlmClient
 from rag.repository.chunk_repository import ChunkRepository
@@ -30,10 +31,11 @@ def chunks(database):
     return repository
 
 
-def build_service(database, primary: FakeLlmClient, fallback: FakeLlmClient) -> RagService:
+def build_service(database, providers: list[tuple[str, FakeLlmClient]]) -> RagService:
+    """providers: (provider name, fake client) in fallback order, wired the way bootstrap wires the real ones."""
     ledger = LedgerRepository(database)
-    llm_client = FallbackLlmClient(LoggingLlmClient(primary, "gemini", "primary", ledger),
-                                   LoggingLlmClient(fallback, "ollama", "fallback", ledger))
+    llm_client = FallbackLlmClient([LoggingLlmClient(client, provider, fallback_role(position), ledger)
+                                    for position, (provider, client) in enumerate(providers)])
     return RagService(ChunkRepository(database), EMBEDDER, PromptBuilder(), llm_client, ledger)
 
 
@@ -42,9 +44,12 @@ def fetch_all(database, query):
         return connection.execute(query).fetchall()
 
 
-def test_fallback_answer_is_recorded_as_one_request_and_two_llm_calls(database, chunks):
-    service = build_service(database, primary=FakeLlmClient(error=LlmUnavailableError("quota"), model_name="gemini-x"),
-                            fallback=FakeLlmClient(answer="Alice [1].", model_name="qwen"))
+def test_third_tier_answer_is_recorded_as_one_request_and_three_llm_calls(database, chunks):
+    service = build_service(database, [
+        ("groq", FakeLlmClient(error=LlmUnavailableError("429 rate limited"), model_name="gpt-oss")),
+        ("openrouter", FakeLlmClient(error=LlmTimeoutError("slow"), model_name="nemotron")),
+        ("ollama", FakeLlmClient(answer="Alice [1].", model_name="llama")),
+    ])
 
     rag_answer = service.answer_question("Who built the billing service?", "cvs", top_k=5, entry_point="api")
 
@@ -58,16 +63,35 @@ def test_fallback_answer_is_recorded_as_one_request_and_two_llm_calls(database, 
     calls = fetch_all(database, "SELECT rag_request_id, purpose, provider, model, role, success, error_type "
                                 "FROM llm_calls ORDER BY id")
     assert calls == [
-        {"rag_request_id": request["id"], "purpose": "answer", "provider": "gemini", "model": "gemini-x",
+        {"rag_request_id": request["id"], "purpose": "answer", "provider": "groq", "model": "gpt-oss",
          "role": "primary", "success": False, "error_type": "unavailable"},
-        {"rag_request_id": request["id"], "purpose": "answer", "provider": "ollama", "model": "qwen",
-         "role": "fallback", "success": True, "error_type": None},
+        {"rag_request_id": request["id"], "purpose": "answer", "provider": "openrouter", "model": "nemotron",
+         "role": "fallback_1", "success": False, "error_type": "timeout"},
+        {"rag_request_id": request["id"], "purpose": "answer", "provider": "ollama", "model": "llama",
+         "role": "fallback_2", "success": True, "error_type": None},
     ]
+
+
+def test_configuration_error_is_recorded_and_stops_the_chain(database, chunks):
+    local = FakeLlmClient()
+    service = build_service(database, [
+        ("groq", FakeLlmClient(error=LlmConfigurationError("401 bad key"), model_name="gpt-oss")),
+        ("ollama", local),
+    ])
+
+    with pytest.raises(LlmConfigurationError):
+        service.answer_question("Who built the billing service?", None, top_k=5)
+
+    assert local.calls == []
+    [request] = fetch_all(database, "SELECT answer FROM rag_requests")
+    assert request["answer"] is None  # the request is still finished, without an answer
+    assert fetch_all(database, "SELECT role, error_type FROM llm_calls") == [
+        {"role": "primary", "error_type": "configuration"}]
 
 
 def test_question_about_nothing_in_the_documents_is_refused_before_any_llm_call(database, chunks):
     primary = FakeLlmClient()
-    service = build_service(database, primary=primary, fallback=FakeLlmClient())
+    service = build_service(database, [("groq", primary), ("ollama", FakeLlmClient())])
 
     rag_answer = service.answer_question("What is the capital of Peru?", None, top_k=5)
 
@@ -80,7 +104,7 @@ def test_question_about_nothing_in_the_documents_is_refused_before_any_llm_call(
 
 def test_eval_questions_are_linked_to_their_eval_run(database, chunks):
     run_id = EvalRepository(database).start_run("unanswerable", {}, None)
-    service = build_service(database, primary=FakeLlmClient(), fallback=FakeLlmClient())
+    service = build_service(database, [("groq", FakeLlmClient())])
 
     service.answer_question("Who built the billing service?", None, top_k=5, entry_point="eval", eval_run_id=run_id)
 

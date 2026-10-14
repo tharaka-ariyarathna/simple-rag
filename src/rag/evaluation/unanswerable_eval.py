@@ -6,7 +6,7 @@ from pathlib import Path
 from rag.constants import (
     EVAL_MAX_FALSE_REFUSAL_RATE, EVAL_MAX_HALLUCINATION_RATE, EVAL_RANDOM_SEED, UNANSWERABLE_QUESTIONS_PATH,
 )
-from rag.llm.base import LlmError
+from rag.llm.base import RECOVERABLE_LLM_ERRORS
 from rag.service.rag_service import REFUSAL_REASON_LLM, REFUSAL_REASON_RETRIEVAL, RagService
 
 logger = logging.getLogger(__name__)
@@ -32,12 +32,13 @@ def sample_answerable_questions(synthetic_questions: list[dict], sample_size: in
 
 
 def ask(rag_service: RagService, case: dict, top_k: int, eval_run_id: int) -> dict:
-    """Runs one question through the full pipeline (retrieval + LLM) and classifies the outcome."""
+    """Runs one question through the full pipeline (retrieval + LLM) and classifies the outcome.
+    An LlmConfigurationError is not caught: every other question would fail the same way, so the run stops."""
     try:
         rag_answer = rag_service.answer_question(
             case["question"], None, top_k, entry_point="eval", eval_run_id=eval_run_id
         )
-    except LlmError as error:
+    except RECOVERABLE_LLM_ERRORS as error:
         logger.warning("LLM failed for %r: %s", case["question"], error)
         return {"question": case["question"], "category": case["category"], "outcome": OUTCOME_ERROR,
                 "details": {"error": str(error)[:300]}}

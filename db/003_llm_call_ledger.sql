@@ -26,14 +26,14 @@ CREATE TABLE IF NOT EXISTS llm_calls (
     created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
     rag_request_id BIGINT      REFERENCES rag_requests (id) ON DELETE SET NULL,
     purpose        TEXT        NOT NULL,          -- answer / question_generation
-    provider       TEXT        NOT NULL,          -- gemini / ollama
+    provider       TEXT        NOT NULL,          -- groq / openrouter / ollama / gemini
     model          TEXT        NOT NULL,
-    role           TEXT        NOT NULL,          -- primary / fallback
+    role           TEXT        NOT NULL,          -- primary / fallback_1 / fallback_2 (position in the chain)
     latency_ms     INT         NOT NULL,
     input_tokens   INT,                           -- NULL when the provider did not report it
     output_tokens  INT,
     success        BOOLEAN     NOT NULL,
-    error_type     TEXT                           -- timeout / unavailable / NULL
+    error_type     TEXT                           -- timeout / unavailable / configuration / NULL
 );
 
 CREATE INDEX IF NOT EXISTS llm_calls_created_at_idx ON llm_calls (created_at);

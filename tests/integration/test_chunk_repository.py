@@ -62,7 +62,7 @@ def test_re_saving_a_file_replaces_its_chunks_for_that_model_only(repository):
                            embedding_model="model-a")
 
     contents = [chunk["content"] for chunk in repository.list_chunks("model-a")]
-    assert contents == ["unrelated", "new version"]  # ordered by source, then chunk_index
+    assert contents == ["new version", "unrelated"]  # ordered by source (C:/cvs/... before C:/jds/...)
     assert repository.count_by_folder("model-b") == {"cvs": 1}
 
 

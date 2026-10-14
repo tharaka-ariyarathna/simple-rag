@@ -1,27 +1,70 @@
-"""Writes synthetic test questions for every chunk that has none yet. Resumable: stop it any time.
+"""Writes synthetic test questions for every chunk that has none yet, with the local LLM. Resumable: stop it any time.
 
+When the local LLM keeps failing (after its retries), the run logs the error and stops with exit code 1.
 Run from src:  python -m rag.evaluation.generate_questions [--limit N]
 """
 import argparse
 import logging
 import time
+from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
-from rag.bootstrap import build_rag_components
+from rag.bootstrap import build_question_generation_components
 from rag.constants import ACTIVE_EMBEDDING_MODEL, QUESTION_GENERATION_DELAY_SECONDS
 from rag.evaluation.question_generator import QuestionGenerationError, QuestionGenerator
 from rag.llm.base import LlmError
 from rag.repository.chunk_repository import ChunkRepository
 from rag.repository.question_repository import QuestionRepository
 
-MAX_CONSECUTIVE_FAILURES = 5  # the LLM is probably down or out of quota: stop instead of burning through chunks
+logger = logging.getLogger(__name__)
 
 
-def generate_questions(limit: int | None) -> None:
-    components = build_rag_components()
+@dataclass
+class GenerationSummary:
+    saved_questions: int = 0
+    skipped_chunks: int = 0  # the LLM found nothing worth asking
+    unusable_replies: int = 0  # the reply was not usable JSON: the chunk is retried next run
+    stopped_by: str | None = None  # the LLM error that stopped the run; None when every chunk was processed
+
+
+def process_chunks(
+    pending_chunks: list[dict],
+    generator: QuestionGenerator,
+    question_repository: QuestionRepository,
+    delay_seconds: float = QUESTION_GENERATION_DELAY_SECONDS,
+    sleep: Callable[[float], None] = time.sleep,
+) -> GenerationSummary:
+    summary = GenerationSummary()
+    for position, chunk in enumerate(pending_chunks, start=1):
+        label = f"[{position}/{len(pending_chunks)}] {chunk['folder']} / {Path(chunk['source']).name} #{chunk['chunk_index']}"
+        try:
+            generated = generator.generate(chunk["content"])
+        except QuestionGenerationError as error:  # a bad reply, not an outage: move on
+            summary.unusable_replies += 1
+            print(f"{label}: unusable reply, retried next run ({error})")
+            continue
+        except LlmError as error:  # retries are used up, or the setup is wrong: more chunks would fail the same way
+            logger.error("Stopping at %s: the local LLM failed: %s. Fix it and run again to resume.", label, error)
+            summary.stopped_by = str(error)
+            break
+        question_repository.save_questions(chunk["source"], chunk["chunk_index"], generated.questions, generated.model)
+        if generated.questions:
+            summary.saved_questions += len(generated.questions)
+            print(f"{label}: {len(generated.questions)} questions")
+        else:
+            summary.skipped_chunks += 1
+            print(f"{label}: nothing worth asking")
+        if delay_seconds:
+            sleep(delay_seconds)
+    return summary
+
+
+def generate_questions(limit: int | None) -> bool:
+    """Returns False when the run was stopped by an LLM failure."""
+    components = build_question_generation_components()
     try:
         chunk_repository = ChunkRepository(components.database)
         question_repository = QuestionRepository(components.database)
-        generator = QuestionGenerator(components.llm_client)
 
         processed_keys = question_repository.processed_chunk_keys()
         pending_chunks = [
@@ -32,32 +75,10 @@ def generate_questions(limit: int | None) -> None:
             pending_chunks = pending_chunks[:limit]
         print(f"{len(pending_chunks)} chunks to process ({len(processed_keys)} already done).")
 
-        saved_questions = skipped_chunks = failed_chunks = consecutive_failures = 0
-        for position, chunk in enumerate(pending_chunks, start=1):
-            label = f"[{position}/{len(pending_chunks)}] {chunk['folder']} / {Path(chunk['source']).name} #{chunk['chunk_index']}"
-            try:
-                questions = generator.generate(chunk["content"])
-            except (LlmError, QuestionGenerationError) as error:
-                failed_chunks += 1
-                consecutive_failures += 1
-                print(f"{label}: failed ({error})")
-                if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
-                    print(f"Stopping after {MAX_CONSECUTIVE_FAILURES} failures in a row. Run again to resume.")
-                    break
-                continue
-            consecutive_failures = 0
-            question_repository.save_questions(
-                chunk["source"], chunk["chunk_index"], questions, components.llm_client.model_name
-            )
-            if questions:
-                saved_questions += len(questions)
-                print(f"{label}: {len(questions)} questions")
-            else:
-                skipped_chunks += 1
-                print(f"{label}: nothing worth asking")
-            time.sleep(QUESTION_GENERATION_DELAY_SECONDS)
-
-        print(f"Done: {saved_questions} questions saved, {skipped_chunks} chunks skipped, {failed_chunks} failed.")
+        summary = process_chunks(pending_chunks, QuestionGenerator(components.llm_client), question_repository)
+        print(f"{'Stopped' if summary.stopped_by else 'Done'}: {summary.saved_questions} questions saved, "
+              f"{summary.skipped_chunks} chunks skipped, {summary.unusable_replies} unusable replies.")
+        return summary.stopped_by is None
     finally:
         components.close()
 
@@ -66,4 +87,4 @@ if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
     argument_parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     argument_parser.add_argument("--limit", type=int, default=None, help="process at most this many chunks")
-    generate_questions(argument_parser.parse_args().limit)
+    raise SystemExit(0 if generate_questions(argument_parser.parse_args().limit) else 1)

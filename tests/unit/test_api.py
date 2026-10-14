@@ -6,8 +6,8 @@ import pytest
 from fastapi.testclient import TestClient
 from rag.api.main import app
 from rag.api.routes import get_rag_service
-from rag.constants import LLM_TIMEOUT_DETAIL, LLM_UNAVAILABLE_DETAIL, TOP_K_MAX
-from rag.llm.base import LlmTimeoutError, LlmUnavailableError
+from rag.constants import INTERNAL_ERROR_DETAIL, LLM_TIMEOUT_DETAIL, LLM_UNAVAILABLE_DETAIL, TOP_K_MAX
+from rag.llm.base import LlmConfigurationError, LlmTimeoutError, LlmUnavailableError
 from rag.service.rag_service import RagAnswer, SourceReference
 
 
@@ -82,7 +82,8 @@ def test_invalid_requests_are_rejected_before_the_service_runs(use_service, payl
 
 @pytest.mark.parametrize("error, status_code, detail", [
     (LlmTimeoutError("ollama took 240s on host x"), 504, LLM_TIMEOUT_DETAIL),
-    (LlmUnavailableError("Gemini returned 403: key AIza... invalid"), 503, LLM_UNAVAILABLE_DETAIL),
+    (LlmUnavailableError("Groq returned 429: rate limit reached"), 503, LLM_UNAVAILABLE_DETAIL),
+    (LlmConfigurationError("Groq returned 401: invalid api key gsk_..."), 500, INTERNAL_ERROR_DETAIL),
 ])
 def test_llm_failures_map_to_a_status_with_a_generic_message(use_service, error, status_code, detail):
     response = use_service(StubRagService(error=error)).post("/chat", json={"question": "q"})

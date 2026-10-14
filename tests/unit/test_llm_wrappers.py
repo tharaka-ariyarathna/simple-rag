@@ -1,51 +1,142 @@
 import pytest
-from rag.llm.base import LlmTimeoutError, LlmUnavailableError
+from rag.llm.base import LlmConfigurationError, LlmTimeoutError, LlmUnavailableError
 from rag.llm.call_context import current_purpose, current_rag_request_id, llm_call_context
 from rag.llm.fallback_client import FallbackLlmClient
 from rag.llm.logging_client import LoggingLlmClient
+from rag.llm.retrying_client import RetryingLlmClient
 from tests.fakes import FakeLedgerRepository, FakeLlmClient
 
 
-class TestFallback:
-    def test_primary_answer_is_used_and_fallback_is_not_called(self):
-        primary, fallback = FakeLlmClient(answer="from primary"), FakeLlmClient(answer="from fallback")
+class SequenceLlmClient(FakeLlmClient):
+    """Raises the given errors on the first calls, then answers."""
 
-        result = FallbackLlmClient(primary, fallback).generate("s", "u")
+    def __init__(self, errors: list[Exception], answer: str = "finally"):
+        super().__init__(answer=answer)
+        self.errors = list(errors)
+
+    def generate(self, system_prompt, user_prompt):
+        self.error = self.errors.pop(0) if self.errors else None
+        return super().generate(system_prompt, user_prompt)
+
+
+class TestFallback:
+    def test_primary_answer_is_used_and_the_others_are_not_called(self):
+        primary, second, third = FakeLlmClient(answer="from primary"), FakeLlmClient(), FakeLlmClient()
+
+        result = FallbackLlmClient([primary, second, third]).generate("s", "u")
 
         assert result.text == "from primary"
-        assert fallback.calls == []
+        assert second.calls == [] and third.calls == []
 
     @pytest.mark.parametrize("error", [LlmUnavailableError("down"), LlmTimeoutError("slow")])
-    def test_llm_error_from_primary_switches_to_fallback(self, error):
-        fallback = FakeLlmClient(answer="from fallback")
+    def test_recoverable_error_moves_on_to_the_next_client(self, error):
+        second = FakeLlmClient(answer="from second")
 
-        result = FallbackLlmClient(FakeLlmClient(error=error), fallback).generate("s", "u")
+        result = FallbackLlmClient([FakeLlmClient(error=error), second]).generate("s", "u")
 
-        assert result.text == "from fallback"
-        assert fallback.calls[0]["system"] == "s" and fallback.calls[0]["user"] == "u"
+        assert result.text == "from second"
+        assert second.calls[0]["system"] == "s" and second.calls[0]["user"] == "u"
+
+    def test_third_client_answers_when_the_first_two_fail(self):
+        third = FakeLlmClient(answer="from local")
+        client = FallbackLlmClient([FakeLlmClient(error=LlmUnavailableError("rate limited")),
+                                    FakeLlmClient(error=LlmTimeoutError("slow")), third])
+
+        assert client.generate("s", "u").text == "from local"
+
+    def test_configuration_error_stops_without_trying_the_others(self):
+        second = FakeLlmClient()
+
+        with pytest.raises(LlmConfigurationError):
+            FallbackLlmClient([FakeLlmClient(error=LlmConfigurationError("401 bad key")), second]).generate("s", "u")
+        assert second.calls == []
+
+    def test_configuration_error_from_a_later_client_also_stops_the_chain(self):
+        third = FakeLlmClient()
+        client = FallbackLlmClient([FakeLlmClient(error=LlmUnavailableError("down")),
+                                    FakeLlmClient(error=LlmConfigurationError("400")), third])
+
+        with pytest.raises(LlmConfigurationError):
+            client.generate("s", "u")
+        assert third.calls == []
 
     def test_programming_errors_are_not_hidden_by_the_fallback(self):
-        fallback = FakeLlmClient()
+        second = FakeLlmClient()
 
         with pytest.raises(KeyError):
-            FallbackLlmClient(FakeLlmClient(error=KeyError("bug")), fallback).generate("s", "u")
-        assert fallback.calls == []
+            FallbackLlmClient([FakeLlmClient(error=KeyError("bug")), second]).generate("s", "u")
+        assert second.calls == []
 
-    def test_when_both_fail_the_fallback_error_reaches_the_caller(self):
-        client = FallbackLlmClient(FakeLlmClient(error=LlmUnavailableError("primary")),
-                                   FakeLlmClient(error=LlmTimeoutError("fallback")))
+    def test_when_all_fail_the_last_error_reaches_the_caller(self):
+        client = FallbackLlmClient([FakeLlmClient(error=LlmUnavailableError("first")),
+                                    FakeLlmClient(error=LlmUnavailableError("second")),
+                                    FakeLlmClient(error=LlmTimeoutError("last"))])
 
-        with pytest.raises(LlmTimeoutError, match="fallback"):
+        with pytest.raises(LlmTimeoutError, match="last"):
             client.generate("s", "u")
 
-    def test_model_name_and_close_cover_both_clients(self):
-        primary, fallback = FakeLlmClient(model_name="gemini"), FakeLlmClient(model_name="qwen")
-        client = FallbackLlmClient(primary, fallback)
+    def test_model_name_and_close_cover_every_client(self):
+        clients = [FakeLlmClient(model_name="gpt-oss"), FakeLlmClient(model_name="nemotron"),
+                   FakeLlmClient(model_name="llama")]
+        client = FallbackLlmClient(clients)
 
         client.close()
 
-        assert client.model_name == "gemini (fallback: qwen)"
-        assert primary.closed and fallback.closed
+        assert client.model_name == "gpt-oss -> nemotron -> llama"
+        assert all(inner.closed for inner in clients)
+
+    def test_needs_at_least_one_client(self):
+        with pytest.raises(ValueError):
+            FallbackLlmClient([])
+
+
+class TestRetrying:
+    def test_retries_recoverable_errors_with_growing_delays_until_it_answers(self):
+        waits = []
+        inner = SequenceLlmClient([LlmTimeoutError("slow"), LlmUnavailableError("busy")])
+
+        result = RetryingLlmClient(inner, retry_delays_seconds=[2, 4, 8], sleep=waits.append).generate("s", "u")
+
+        assert result.text == "finally"
+        assert len(inner.calls) == 3
+        assert waits == [2, 4]
+
+    def test_gives_up_after_the_last_retry_with_the_last_error(self):
+        waits = []
+        inner = SequenceLlmClient([LlmUnavailableError(f"down {number}") for number in range(1, 5)])
+
+        with pytest.raises(LlmUnavailableError, match="down 4"):
+            RetryingLlmClient(inner, retry_delays_seconds=[2, 4, 8], sleep=waits.append).generate("s", "u")
+
+        assert len(inner.calls) == 4  # the first try + 3 retries
+        assert waits == [2, 4, 8]
+
+    def test_configuration_error_is_not_retried(self):
+        waits = []
+        inner = SequenceLlmClient([LlmConfigurationError("404 model not pulled")])
+
+        with pytest.raises(LlmConfigurationError):
+            RetryingLlmClient(inner, retry_delays_seconds=[2, 4, 8], sleep=waits.append).generate("s", "u")
+
+        assert len(inner.calls) == 1 and waits == []
+
+    def test_every_attempt_is_a_ledger_row_when_it_wraps_the_logging_client(self):
+        ledger = FakeLedgerRepository()
+        inner = SequenceLlmClient([LlmTimeoutError("slow")])
+        client = RetryingLlmClient(LoggingLlmClient(inner, "ollama", "primary", ledger), retry_delays_seconds=[1],
+                                   sleep=lambda seconds: None)
+
+        client.generate("s", "u")
+
+        assert [call["success"] for call in ledger.llm_calls] == [False, True]
+
+    def test_model_name_and_close_come_from_the_wrapped_client(self):
+        inner = FakeLlmClient(model_name="llama3.2:3b")
+        client = RetryingLlmClient(inner)
+
+        client.close()
+
+        assert client.model_name == "llama3.2:3b" and inner.closed
 
 
 class TestLogging:
@@ -67,6 +158,7 @@ class TestLogging:
     @pytest.mark.parametrize("error, error_type", [
         (LlmTimeoutError("slow"), "timeout"),
         (LlmUnavailableError("down"), "unavailable"),
+        (LlmConfigurationError("401"), "configuration"),
         (ValueError("bug"), "ValueError"),
     ])
     def test_failed_call_is_recorded_and_the_error_is_re_raised(self, error, error_type):

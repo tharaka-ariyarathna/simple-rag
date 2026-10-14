@@ -18,9 +18,10 @@ def question(text="Which AWS services ran billing?", answer="Lambda and SQS",
 def test_generate_asks_the_llm_under_the_question_generation_purpose():
     llm = FakeLlmClient(answer=reply_with(question()))
 
-    questions = QuestionGenerator(llm).generate(f"  {CHUNK}  ")
+    generated = QuestionGenerator(llm).generate(f"  {CHUNK}  ")
 
-    assert questions == [question()]
+    assert generated.questions == [question()]
+    assert generated.model == "fake-llm"  # LlmResult.model: what actually answered
     assert llm.calls[0]["purpose"] == "question_generation"
     assert llm.calls[0]["user"] == f"Passage:\n{CHUNK}"
 

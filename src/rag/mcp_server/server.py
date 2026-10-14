@@ -14,6 +14,7 @@ from mcp.server.mcpserver.exceptions import ToolError
 from rag.bootstrap import RagComponents, build_rag_components
 from rag.constants import (
     FOLDER_MAX_LENGTH,
+    INTERNAL_ERROR_DETAIL,
     LLM_TIMEOUT_DETAIL,
     LLM_UNAVAILABLE_DETAIL,
     MCP_HOST,
@@ -25,7 +26,7 @@ from rag.constants import (
     RETRIEVAL_TOP_K,
     TOP_K_MAX,
 )
-from rag.llm.base import LlmTimeoutError, LlmUnavailableError
+from rag.llm.base import LlmConfigurationError, LlmTimeoutError, LlmUnavailableError
 from rag.service.rag_service import RagService
 
 logger = logging.getLogger(__name__)
@@ -98,6 +99,9 @@ def answer_question(ctx: Context, question: Question, folder: Folder = None, top
     except LlmUnavailableError as error:
         logger.error("LLM unavailable: %s", error)
         raise ToolError(LLM_UNAVAILABLE_DETAIL) from error
+    except LlmConfigurationError as error:  # our fault (bad key, bad request): details stay in the log
+        logger.error("LLM misconfigured: %s", error)
+        raise ToolError(INTERNAL_ERROR_DETAIL) from error
     return asdict(rag_answer)  # RagAnswer dataclass -> {"answer": ..., "sources": [...]}
 
 

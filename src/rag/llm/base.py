@@ -7,11 +7,21 @@ class LlmError(Exception):
 
 
 class LlmUnavailableError(LlmError):
-    """The LLM could not be reached or returned an error (server down, model not pulled, bad response)."""
+    """The LLM could not answer right now (server down, rate limited, out of credits, bad response).
+    Retrying, or asking another provider, may work."""
 
 
 class LlmTimeoutError(LlmError):
-    """The LLM did not answer within the configured timeout."""
+    """The LLM did not answer within the configured timeout. Retrying, or asking another provider, may work."""
+
+
+class LlmConfigurationError(LlmError):
+    """The request is wrong on our side (bad API key, bad request, unknown model or model not pulled).
+    No retry and no other provider can fix it, so it is raised at once."""
+
+
+# Errors worth a retry or a fallback; LlmConfigurationError is deliberately not one of them
+RECOVERABLE_LLM_ERRORS = (LlmUnavailableError, LlmTimeoutError)
 
 
 @dataclass
@@ -26,7 +36,8 @@ class LlmResult:
 
 class LlmClient(Protocol):
     """What the RAG service relies on. Any LLM provider (Ollama, Claude, ...) must offer this.
-    Implementations must raise LlmUnavailableError / LlmTimeoutError instead of their own errors."""
+    Implementations must raise LlmUnavailableError / LlmTimeoutError / LlmConfigurationError
+    instead of their own errors."""
 
     model_name: str
 
