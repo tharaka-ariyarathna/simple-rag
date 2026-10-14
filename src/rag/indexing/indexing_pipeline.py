@@ -1,9 +1,9 @@
 from pathlib import Path
-from pypdf import PdfReader
 from dotenv import load_dotenv
 from collections import defaultdict
 import os
 from rag.indexing.chunker import TokenChunker
+from rag.indexing.pdf_reader import read_pdf_file
 from rag.embedding.base import EmbeddingModel
 from rag.embedding.sentence_transformer_embedder import SentenceTransformerEmbedder
 from rag.repository.db import Database
@@ -12,10 +12,6 @@ from rag.repository.chunk_repository import ChunkRepository
 load_dotenv()  # Load environment variables from .env file
 docs_dir = os.getenv("DOCS_DIR")
 database_url = os.environ["DATABASE_URL"]
-
-def read_pdf_file(file_path: Path) -> str:
-    reader = PdfReader(file_path)
-    return "\n".join(page.extract_text() or "" for page in reader.pages)
 
 def load_documents(docs_dir: str) -> dict[str, list[dict]]:
     documents_map = defaultdict(list)

@@ -64,3 +64,9 @@ UNANSWERABLE_QUESTIONS_PATH = "evaluation/data/unanswerable.json"  # relative to
 EVAL_MAX_HALLUCINATION_RATE = 0.1  # unanswerable questions that got an answer (starting guess)
 EVAL_MAX_FALSE_REFUSAL_RATE = 0.3  # answerable questions that were refused (starting guess)
 EVAL_RANDOM_SEED = 42  # same sample of answerable questions every run, so runs stay comparable
+
+# JD -> CV matching evaluation
+MATCHING_CHUNKS_RETRIEVED = 50  # chunks fetched per JD; they are then grouped by CV (about 2 chunks per CV)
+MATCHING_CUTOFF = 10  # metrics are computed on the top 10 CVs
+MATCHING_MIN_SIMILARITY = 0.0  # ranking, not refusing: the live Q&A path keeps MIN_SIMILARITY
+MATCHING_STRATEGY_WHOLE_JD = "whole_jd"  # the whole JD text is used as one search query
