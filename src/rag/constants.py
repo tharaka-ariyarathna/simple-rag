@@ -19,7 +19,7 @@ DB_POOL_MIN_SIZE = 1
 DB_POOL_MAX_SIZE = 10
 
 # Retrieval
-RETRIEVAL_TOP_K = 5
+RETRIEVAL_TOP_K = 10  # chunks given to the LLM
 # Chunks scoring below this are treated as not relevant; with none left the question is refused without the LLM.
 # Measured on the CV set: in-domain questions pass 120-150 of 160 chunks, off-topic ones top out at 0.44-0.49,
 # so 0.4 would let off-topic questions through to the LLM.
@@ -42,6 +42,13 @@ KEYWORD_STOP_WORDS = frozenset("""
     work works worked working know knows known knowledge use used uses using familiar skilled skill skills
     proficient strong year years find show list give tell please
 """.split())
+
+# Reranking: a cross-encoder reads the question and each candidate chunk together and reorders them.
+# Hybrid search finds the right chunk in its top 20-30 far more often than in its top 10, so the candidates are
+# reranked and only the best RETRIEVAL_TOP_K go on. It only reorders: the MIN_SIMILARITY refusal stays on cosine.
+RERANKER_MODEL = "BAAI/bge-reranker-base"  # override with RERANKER_MODEL in .env; "none" switches reranking off
+RERANK_CANDIDATES = 30  # chunks hybrid search hands to the reranker (an internal setting, not limited by TOP_K_MAX)
+RERANK_BATCH_SIZE = 16
 
 # LLM
 # Answering tries these providers in order (override with ANSWER_LLM_CHAIN in .env)
@@ -68,7 +75,8 @@ LLM_TEMPERATURE=0.1  # low temperature = more deterministic, less creative
 # API request limits
 QUESTION_MAX_LENGTH = 1000
 FOLDER_MAX_LENGTH = 200
-TOP_K_MAX = 20
+TOP_K_MAX = 20  # chunks an API / MCP caller may ask for
+EVAL_TOP_K_MAX = 50  # the retrieval eval may look deeper, e.g. hit@30 to see what reranking could reach
 
 # API error responses (details stay generic; full error goes to the server log)
 LLM_UNAVAILABLE_DETAIL = "The language model is unavailable. Please try again later."

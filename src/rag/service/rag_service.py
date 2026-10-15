@@ -6,7 +6,8 @@ from rag.llm.base import LlmClient
 from rag.llm.call_context import llm_call_context
 from rag.repository.chunk_repository import ChunkRepository
 from rag.repository.ledger_repository import LedgerRepository
-from rag.constants import NO_RELEVANT_CONTEXT_ANSWER
+from rag.constants import NO_RELEVANT_CONTEXT_ANSWER, RERANK_CANDIDATES
+from rag.reranking.base import Reranker
 from rag.embedding.base import EmbeddingModel
 from rag.service.keyword_query import KeywordQueryBuilder
 from rag.service.prompt_builder import PromptBuilder
@@ -34,8 +35,8 @@ class RagAnswer:
 class RagService:
     """Question in, grounded answer out. Knows nothing about HTTP.
 
-    Flow: embed question -> hybrid search (vector + keywords, with threshold) -> no chunks? fixed answer
-    -> build prompt -> LLM -> answer + sources.
+    Flow: embed question -> hybrid search (vector + keywords, with threshold) -> rerank the candidates
+    -> no chunks? fixed answer -> build prompt -> LLM -> answer + sources.
     All dependencies are injected (built once in api/main.py lifespan).
     """
 
@@ -47,6 +48,8 @@ class RagService:
         llm_client: LlmClient,
         ledger_repository: LedgerRepository | None = None,  # None = do not record requests
         keyword_query_builder: KeywordQueryBuilder | None = None,  # None = vector search only
+        reranker: Reranker | None = None,  # None = keep the hybrid search order
+        rerank_candidates: int = RERANK_CANDIDATES,
     ):
         self.repository = repository
         self.embedder = embedder
@@ -54,6 +57,8 @@ class RagService:
         self.llm_client = llm_client
         self.ledger_repository = ledger_repository
         self.keyword_query_builder = keyword_query_builder
+        self.reranker = reranker
+        self.rerank_candidates = rerank_candidates
 
     def list_folders(self) -> dict[str, int]:
         """Folder name -> chunk count, for the active embedding model."""
@@ -95,26 +100,38 @@ class RagService:
 
     def search_chunks(
         self, question: str, folder: str | None, top_k: int, min_similarity: float | None = None,
-        use_keywords: bool = True,
+        use_keywords: bool = True, use_reranker: bool = True,
     ) -> list[dict]:
         """Retrieval only (no LLM): the most relevant chunks above the similarity threshold, best first.
         min_similarity overrides the default threshold (evaluation passes 0 to see what the threshold hides).
-        use_keywords=False forces vector-only search (JD matching: a whole JD is not a keyword query)."""
+        use_keywords=False forces vector-only search and use_reranker=False keeps the search order
+        (JD matching: a whole JD is neither a keyword query nor short enough for the reranker)."""
+        rerank = use_reranker and self.reranker is not None
         query_vector = self.embedder.embed_query(question)
         threshold = {} if min_similarity is None else {"min_similarity": min_similarity}
         keyword_terms = (
             self.keyword_query_builder.terms_for(question, self.embedder.model_name)
             if use_keywords and self.keyword_query_builder is not None else []
         )
-        return self.repository.search_similar(
+        chunks = self.repository.search_similar(
             query_vector,
             embedding_model=self.embedder.model_name,
             dimension=self.embedder.dimension,
-            top_k=top_k,
+            # the reranker gets a wider pool than the caller asked for; the threshold still applies to all of it
+            top_k=max(top_k, self.rerank_candidates) if rerank else top_k,
             folder=folder,
             keyword_terms=keyword_terms,
             **threshold,
         )
+        return self.rerank(question, chunks)[:top_k] if rerank else chunks
+
+    def rerank(self, question: str, chunks: list[dict]) -> list[dict]:
+        """Candidates reordered by the reranker, best first. Each gets a rerank_score; similarity is unchanged."""
+        if not chunks:
+            return chunks
+        scores = self.reranker.score(question, [chunk["content"] for chunk in chunks])
+        scored = [{**chunk, "rerank_score": score} for chunk, score in zip(chunks, scores, strict=True)]
+        return sorted(scored, key=lambda chunk: chunk["rerank_score"], reverse=True)  # stable: ties keep search order
 
     def record_request_start(
         self, entry_point: str, question: str, folder: str | None, top_k: int, chunks: list[dict],

@@ -5,7 +5,7 @@ Run from src:  python -m rag.evaluation.run_retrieval [--top-k 5]
 """
 import argparse
 from rag.bootstrap import build_rag_components
-from rag.constants import ACTIVE_EMBEDDING_MODEL, EVAL_WORST_MISSES_SHOWN, RETRIEVAL_TOP_K, TOP_K_MAX
+from rag.constants import ACTIVE_EMBEDDING_MODEL, EVAL_WORST_MISSES_SHOWN, RETRIEVAL_TOP_K, EVAL_TOP_K_MAX
 from rag.evaluation.retrieval_eval import (
     OUTCOME_HIT, OUTCOME_UNMATCHABLE, RetrievalCase, compute_metrics, evaluate_case, judge,
 )
@@ -79,6 +79,6 @@ def run_retrieval_eval(top_k: int) -> bool:
 
 if __name__ == "__main__":
     argument_parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    argument_parser.add_argument("--top-k", type=int, default=RETRIEVAL_TOP_K, choices=range(1, TOP_K_MAX + 1),
-                                 metavar=f"1-{TOP_K_MAX}")
+    argument_parser.add_argument("--top-k", type=int, default=RETRIEVAL_TOP_K, choices=range(1, EVAL_TOP_K_MAX + 1),
+                                 metavar=f"1-{EVAL_TOP_K_MAX}")
     raise SystemExit(0 if run_retrieval_eval(argument_parser.parse_args().top_k) else 1)

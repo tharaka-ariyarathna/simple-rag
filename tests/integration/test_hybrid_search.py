@@ -5,7 +5,7 @@ from rag.repository.chunk_repository import ChunkRepository
 from rag.service.keyword_query import KeywordQueryBuilder
 from rag.service.prompt_builder import PromptBuilder
 from rag.service.rag_service import RagService
-from tests.fakes import FakeEmbedder, FakeLlmClient, unit_vector
+from tests.fakes import FakeEmbedder, FakeLlmClient, FakeReranker, unit_vector
 
 QUERY = unit_vector(1, 0, 0)
 MODEL = "model-a"
@@ -104,3 +104,15 @@ def test_rag_service_finds_the_keyword_match_first(repository):
     assert files(results) == ["ben.pdf", "ana.pdf", "eve.pdf"]
     assert files(service.search_chunks("Who knows Python?", None, top_k=3, use_keywords=False)) == [
         "ana.pdf", "ben.pdf", "eve.pdf"]
+
+
+def test_reranker_reorders_hybrid_results_but_never_adds_chunks_below_the_threshold(repository):
+    embedder = FakeEmbedder({"Who writes reports?": QUERY}, model_name=MODEL, dimension=3)
+    reranker = FakeReranker({"Senior C# and .NET developer.": 5.0,
+                             "Python scripting for monthly reports.": 99.0})  # below the threshold: never a candidate
+    service = RagService(repository, embedder, PromptBuilder(), FakeLlmClient(), reranker=reranker)
+
+    results = service.search_chunks("Who writes reports?", None, top_k=2)
+
+    assert files(results) == ["cid.pdf", "ana.pdf"]  # cid moves from 4th to 1st, ana (score 0) keeps its place
+    assert "Python scripting for monthly reports." not in reranker.calls[0][1]

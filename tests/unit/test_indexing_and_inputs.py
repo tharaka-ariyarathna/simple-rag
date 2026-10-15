@@ -9,7 +9,7 @@ import pytest
 from rag.constants import BGE_QUERY_PREFIX
 from rag.embedding import sentence_transformer_embedder
 from rag.evaluation import matching_dataset, run_settings
-from tests.fakes import FakeEmbedder, WordTokenizer, unit_vector
+from tests.fakes import FakeEmbedder, FakeReranker, WordTokenizer, unit_vector
 from rag.indexing.chunker import TokenChunker
 
 
@@ -120,11 +120,21 @@ class TestRunSettings:
 
         assert run_settings.current_git_commit() == "abc1234"
 
-    def test_settings_name_the_models_and_retrieval_parameters(self):
-        components = SimpleNamespace(rag_service=SimpleNamespace(embedder=FakeEmbedder(model_name="emb")),
-                                     llm_client=SimpleNamespace(model_name="llm"))
+    def components(self, keyword_query_builder=None, reranker=None):
+        rag_service = SimpleNamespace(embedder=FakeEmbedder(model_name="emb"), keyword_query_builder=keyword_query_builder,
+                                      reranker=reranker, rerank_candidates=30)
+        return SimpleNamespace(rag_service=rag_service, llm_client=SimpleNamespace(model_name="llm"))
 
-        settings = run_settings.collect_settings(components, top_k=7)
+    def test_settings_name_the_models_and_retrieval_parameters(self):
+        settings = run_settings.collect_settings(self.components(), top_k=7)
 
         assert (settings["embedding_model"], settings["llm_model"], settings["top_k"]) == ("emb", "llm", 7)
         assert {"chunk_size_tokens", "chunk_overlap_tokens", "min_similarity"} <= settings.keys()
+        assert (settings["keyword_search"], settings["reranker_model"], settings["rerank_candidates"]) == (
+            False, None, None)
+
+    def test_settings_record_hybrid_search_and_the_reranker(self):
+        settings = run_settings.collect_settings(self.components(object(), FakeReranker(model_name="bge")), top_k=10)
+
+        assert (settings["keyword_search"], settings["reranker_model"], settings["rerank_candidates"]) == (
+            True, "bge", 30)

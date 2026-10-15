@@ -5,7 +5,7 @@ from dotenv import load_dotenv
 from rag.constants import (
     CLOUD_QUESTION_GENERATION_DELAY_SECONDS, DEFAULT_ANSWER_LLM_CHAIN, DEFAULT_QUESTION_LLM_CHAIN, GEMINI_MODEL,
     GROQ_BASE_URL, GROQ_MODEL, OLLAMA_MODEL, OPENROUTER_BASE_URL, OPENROUTER_MODEL, QUESTION_GENERATION_DELAY_SECONDS,
-    QUESTION_LLM_COOLDOWN_SECONDS,
+    QUESTION_LLM_COOLDOWN_SECONDS, RERANKER_MODEL,
 )
 from rag.embedding.sentence_transformer_embedder import SentenceTransformerEmbedder
 from rag.llm.base import LlmClient
@@ -15,6 +15,8 @@ from rag.llm.logging_client import LoggingLlmClient
 from rag.llm.ollama_client import OllamaLlmClient
 from rag.llm.openai_compatible_client import OpenAiCompatibleLlmClient
 from rag.llm.retrying_client import RetryingLlmClient
+from rag.reranking.base import Reranker
+from rag.reranking.cross_encoder_reranker import CrossEncoderReranker
 from rag.repository.chunk_repository import ChunkRepository
 from rag.repository.db import Database
 from rag.repository.ledger_repository import LedgerRepository
@@ -147,6 +149,13 @@ def question_generation_delay(providers: list[str]) -> float:
     return QUESTION_GENERATION_DELAY_SECONDS
 
 
+def build_reranker(environ: Mapping[str, str]) -> Reranker | None:
+    """RERANKER_MODEL from .env (default BAAI/bge-reranker-base); "none" switches reranking off, e.g. to measure
+    hybrid search alone with the retrieval eval."""
+    model_name = setting(environ, "RERANKER_MODEL", RERANKER_MODEL)
+    return None if model_name.lower() == "none" else CrossEncoderReranker(model_name)
+
+
 def build_rag_components() -> RagComponents:
     """Composition root: reads .env and wires DB pool, embedding model and LLM clients into RagService, once."""
     load_dotenv()
@@ -162,6 +171,7 @@ def build_rag_components() -> RagComponents:
         llm_client=llm_client,
         ledger_repository=ledger_repository,
         keyword_query_builder=KeywordQueryBuilder(chunk_repository),
+        reranker=build_reranker(os.environ),
     )
     return RagComponents(rag_service=rag_service, database=database, llm_client=llm_client)
 

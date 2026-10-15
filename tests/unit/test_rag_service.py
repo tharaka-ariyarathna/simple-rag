@@ -5,7 +5,8 @@ from rag.service.prompt_builder import PromptBuilder
 from rag.service.rag_service import REFUSAL_REASON_LLM, REFUSAL_REASON_RETRIEVAL, RagService, SourceReference
 from rag.service.keyword_query import KeywordQueryBuilder
 from tests.fakes import (
-    FakeChunkRepository, FakeEmbedder, FakeKeywordRepository, FakeLedgerRepository, FakeLlmClient, chunk_row,
+    FakeChunkRepository, FakeEmbedder, FakeKeywordRepository, FakeLedgerRepository, FakeLlmClient, FakeReranker,
+    chunk_row,
 )
 
 
@@ -125,6 +126,80 @@ class TestHybridSearch:
         make_service(rows=rows, ledger=ledger).answer_question("q", None, top_k=5)
 
         assert ledger.requests[1]["top_similarity"] == pytest.approx(0.72)
+
+
+class TestReranking:
+    ROWS = [chunk_row("a.pdf", "about Spark", similarity=0.90), chunk_row("b.pdf", "about Go", similarity=0.85),
+            chunk_row("c.pdf", "Python for 6 years", similarity=0.70)]
+
+    def service(self, repository, reranker, rerank_candidates=30) -> RagService:
+        return RagService(repository, FakeEmbedder(), PromptBuilder(), FakeLlmClient(), reranker=reranker,
+                          rerank_candidates=rerank_candidates)
+
+    def test_the_reranker_gets_a_wider_pool_than_the_caller_asked_for(self):
+        repository = FakeChunkRepository(self.ROWS)
+
+        self.service(repository, FakeReranker()).search_chunks("q", None, top_k=10)
+
+        assert repository.search_calls[0]["top_k"] == 30
+
+    def test_a_caller_asking_for_more_than_the_pool_gets_that_many_candidates(self):
+        repository = FakeChunkRepository(self.ROWS)
+
+        self.service(repository, FakeReranker(), rerank_candidates=30).search_chunks("q", None, top_k=40)
+
+        assert repository.search_calls[0]["top_k"] == 40
+
+    def test_chunks_come_back_in_reranker_order_cut_to_top_k(self):
+        reranker = FakeReranker({"Python for 6 years": 4.2, "about Go": 1.0, "about Spark": -3.0})
+
+        results = self.service(FakeChunkRepository(self.ROWS), reranker).search_chunks("Who knows Python?", None, 2)
+
+        assert [result["source"] for result in results] == ["c.pdf", "b.pdf"]
+        assert [result["rerank_score"] for result in results] == [4.2, 1.0]
+        assert results[0]["similarity"] == 0.70  # cosine similarity is kept as it was
+        assert reranker.calls == [("Who knows Python?", ["about Spark", "about Go", "Python for 6 years"])]
+
+    def test_equal_scores_keep_the_search_order(self):
+        results = self.service(FakeChunkRepository(self.ROWS), FakeReranker()).search_chunks("q", None, 3)
+
+        assert [result["source"] for result in results] == ["a.pdf", "b.pdf", "c.pdf"]
+
+    def test_reranker_can_be_switched_off_for_a_search(self):
+        repository = FakeChunkRepository(self.ROWS)
+        reranker = FakeReranker({"Python for 6 years": 9.0})
+
+        results = self.service(repository, reranker).search_chunks("q", None, top_k=2, use_reranker=False)
+
+        assert repository.search_calls[0]["top_k"] == 2
+        assert reranker.calls == [] and "rerank_score" not in results[0]
+
+    def test_without_a_reranker_the_search_order_and_top_k_are_kept(self):
+        repository = FakeChunkRepository(self.ROWS)
+
+        results = RagService(repository, FakeEmbedder(), PromptBuilder(), FakeLlmClient()).search_chunks("q", None, 3)
+
+        assert repository.search_calls[0]["top_k"] == 3
+        assert [result["source"] for result in results] == ["a.pdf", "b.pdf", "c.pdf"]
+
+    def test_nothing_above_the_threshold_is_still_a_retrieval_refusal_and_skips_the_reranker(self):
+        reranker = FakeReranker()
+        llm = FakeLlmClient()
+        service = RagService(FakeChunkRepository([]), FakeEmbedder(), PromptBuilder(), llm, reranker=reranker)
+
+        rag_answer = service.answer_question("What is the capital of Peru?", None, top_k=10)
+
+        assert rag_answer.refusal_reason == REFUSAL_REASON_RETRIEVAL
+        assert reranker.calls == [] and llm.calls == []
+
+    def test_the_llm_sees_the_chunks_in_reranker_order(self):
+        llm = FakeLlmClient()
+        reranker = FakeReranker({"Python for 6 years": 4.2})
+        service = RagService(FakeChunkRepository(self.ROWS), FakeEmbedder(), PromptBuilder(), llm, reranker=reranker)
+
+        service.answer_question("Who knows Python?", None, top_k=10)
+
+        assert llm.calls[0]["user"].index("Python for 6 years") < llm.calls[0]["user"].index("about Spark")
 
 class TestLedger:
     def test_answered_request_is_recorded_from_start_to_finish(self):

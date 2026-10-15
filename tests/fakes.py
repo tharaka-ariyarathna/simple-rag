@@ -108,6 +108,19 @@ class FakeChunkRepository:
         return self.folder_counts
 
 
+class FakeReranker:
+    """Scores a passage by the given table (default 0), so the reranked order is known in advance."""
+
+    def __init__(self, scores: dict[str, float] | None = None, model_name: str = "fake-reranker"):
+        self.scores = scores or {}
+        self.model_name = model_name
+        self.calls: list[tuple[str, list[str]]] = []
+
+    def score(self, query: str, passages: list[str]) -> list[float]:
+        self.calls.append((query, passages))
+        return [self.scores.get(passage, 0.0) for passage in passages]
+
+
 class FakeKeywordRepository:
     """question_lexemes splits on spaces (lower-cased, de-duplicated); term_chunk_counts reads a given table."""
 
