@@ -19,7 +19,9 @@ def candidate_id_of(source: str) -> str:
 def rank_candidates(rag_service: RagService, query_text: str, chunks_retrieved: int) -> list[tuple[str, float]]:
     """Retrieves chunks for the query and groups them by CV. A CV's score is its best chunk's similarity.
     Returns (cv id, score), best first. CVs with no chunk among the retrieved ones are not ranked at all."""
-    chunks = rag_service.search_chunks(query_text, None, chunks_retrieved, min_similarity=MATCHING_MIN_SIMILARITY)
+    # Vector only: a whole JD is not a keyword query (hybrid comes with the JD-condensing step)
+    chunks = rag_service.search_chunks(query_text, None, chunks_retrieved, min_similarity=MATCHING_MIN_SIMILARITY,
+                                       use_keywords=False)
     best_score_by_candidate: dict[str, float] = {}
     for chunk in chunks:
         candidate_id = candidate_id_of(chunk["source"])

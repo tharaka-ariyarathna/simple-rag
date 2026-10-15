@@ -8,6 +8,7 @@ from rag.repository.chunk_repository import ChunkRepository
 from rag.repository.ledger_repository import LedgerRepository
 from rag.constants import NO_RELEVANT_CONTEXT_ANSWER
 from rag.embedding.base import EmbeddingModel
+from rag.service.keyword_query import KeywordQueryBuilder
 from rag.service.prompt_builder import PromptBuilder
 
 logger = logging.getLogger(__name__)
@@ -33,7 +34,7 @@ class RagAnswer:
 class RagService:
     """Question in, grounded answer out. Knows nothing about HTTP.
 
-    Flow: embed question -> search chunks (with threshold) -> no chunks? fixed answer
+    Flow: embed question -> hybrid search (vector + keywords, with threshold) -> no chunks? fixed answer
     -> build prompt -> LLM -> answer + sources.
     All dependencies are injected (built once in api/main.py lifespan).
     """
@@ -45,12 +46,14 @@ class RagService:
         prompt_builder: PromptBuilder,
         llm_client: LlmClient,
         ledger_repository: LedgerRepository | None = None,  # None = do not record requests
+        keyword_query_builder: KeywordQueryBuilder | None = None,  # None = vector search only
     ):
         self.repository = repository
         self.embedder = embedder
         self.prompt_builder = prompt_builder
         self.llm_client = llm_client
         self.ledger_repository = ledger_repository
+        self.keyword_query_builder = keyword_query_builder
 
     def list_folders(self) -> dict[str, int]:
         """Folder name -> chunk count, for the active embedding model."""
@@ -91,18 +94,25 @@ class RagService:
             self.record_request_end(rag_request_id, answer_text, refusal_reason, started_at)
 
     def search_chunks(
-        self, question: str, folder: str | None, top_k: int, min_similarity: float | None = None
+        self, question: str, folder: str | None, top_k: int, min_similarity: float | None = None,
+        use_keywords: bool = True,
     ) -> list[dict]:
         """Retrieval only (no LLM): the most relevant chunks above the similarity threshold, best first.
-        min_similarity overrides the default threshold (evaluation passes 0 to see what the threshold hides)."""
+        min_similarity overrides the default threshold (evaluation passes 0 to see what the threshold hides).
+        use_keywords=False forces vector-only search (JD matching: a whole JD is not a keyword query)."""
         query_vector = self.embedder.embed_query(question)
         threshold = {} if min_similarity is None else {"min_similarity": min_similarity}
+        keyword_terms = (
+            self.keyword_query_builder.terms_for(question, self.embedder.model_name)
+            if use_keywords and self.keyword_query_builder is not None else []
+        )
         return self.repository.search_similar(
             query_vector,
             embedding_model=self.embedder.model_name,
             dimension=self.embedder.dimension,
             top_k=top_k,
             folder=folder,
+            keyword_terms=keyword_terms,
             **threshold,
         )
 
@@ -119,7 +129,8 @@ class RagService:
                 folder=folder,
                 top_k=top_k,
                 chunks_found=len(chunks),
-                top_similarity=float(chunks[0]["similarity"]) if chunks else None,
+                # max, not chunks[0]: with hybrid ordering the first chunk is not always the most similar
+                top_similarity=max(float(chunk["similarity"]) for chunk in chunks) if chunks else None,
                 eval_run_id=eval_run_id,
             )
         except Exception as error:  # a broken ledger must never break an answer
