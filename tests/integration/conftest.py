@@ -18,7 +18,7 @@ DB_DIR = Path(__file__).resolve().parents[2] / "db"
 # The schema a fresh database gets. 002 is left out: it migrates a database made by the *old* init.sql,
 # and init.sql already creates chunks in its final shape (running 002 on it would fail on the constraint).
 SCHEMA_FILES = ["init.sql", "003_llm_call_ledger.sql", "004_synthetic_questions.sql", "005_eval_runs.sql",
-                "006_hybrid_search.sql"]
+                "006_hybrid_search.sql", "007_conversation_memory.sql"]
 APP_TABLES = ["chunks", "llm_calls", "rag_requests", "eval_results", "eval_runs", "synthetic_questions",
               "synthetic_question_chunks"]
 

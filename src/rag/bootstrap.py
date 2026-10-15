@@ -2,10 +2,13 @@ import os
 from collections.abc import Mapping
 from dataclasses import dataclass
 from dotenv import load_dotenv
+from langgraph.checkpoint.postgres import PostgresSaver
+from psycopg.rows import dict_row
+from psycopg_pool import ConnectionPool
 from rag.constants import (
     CLOUD_QUESTION_GENERATION_DELAY_SECONDS, DEFAULT_ANSWER_LLM_CHAIN, DEFAULT_QUESTION_LLM_CHAIN, GEMINI_MODEL,
     GROQ_BASE_URL, GROQ_MODEL, OLLAMA_MODEL, OPENROUTER_BASE_URL, OPENROUTER_MODEL, QUESTION_GENERATION_DELAY_SECONDS,
-    QUESTION_LLM_COOLDOWN_SECONDS, RERANKER_MODEL,
+    DB_POOL_MAX_SIZE, DB_SCHEMA, QUESTION_LLM_COOLDOWN_SECONDS, RERANKER_MODEL,
 )
 from rag.embedding.sentence_transformer_embedder import SentenceTransformerEmbedder
 from rag.llm.base import LlmClient
@@ -15,6 +18,8 @@ from rag.llm.logging_client import LoggingLlmClient
 from rag.llm.ollama_client import OllamaLlmClient
 from rag.llm.openai_compatible_client import OpenAiCompatibleLlmClient
 from rag.llm.retrying_client import RetryingLlmClient
+from rag.memory.condenser import QuestionCondenser
+from rag.memory.conversation_graph import ConversationGraph
 from rag.reranking.base import Reranker
 from rag.reranking.cross_encoder_reranker import CrossEncoderReranker
 from rag.repository.chunk_repository import ChunkRepository
@@ -45,9 +50,12 @@ class RagComponents:
     rag_service: RagService
     database: Database
     llm_client: LlmClient
+    conversation_graph: ConversationGraph
+    checkpoint_pool: ConnectionPool
 
     def close(self) -> None:
         self.llm_client.close()
+        self.checkpoint_pool.close()
         self.database.close()
 
 
@@ -156,6 +164,19 @@ def build_reranker(environ: Mapping[str, str]) -> Reranker | None:
     return None if model_name.lower() == "none" else CrossEncoderReranker(model_name)
 
 
+def build_checkpointer(database_url: str) -> tuple[PostgresSaver, ConnectionPool]:
+    """LangGraph's conversation memory, in the same database. It needs its own autocommit connections, which the
+    app pool does not use. setup() creates its tables (checkpoints, checkpoint_blobs, ...) if they are missing."""
+    pool = ConnectionPool(
+        database_url, max_size=DB_POOL_MAX_SIZE, open=True,
+        kwargs={"autocommit": True, "prepare_threshold": 0, "row_factory": dict_row,
+                "options": f"-c search_path={DB_SCHEMA}"},
+    )
+    checkpointer = PostgresSaver(pool)
+    checkpointer.setup()
+    return checkpointer, pool
+
+
 def build_rag_components() -> RagComponents:
     """Composition root: reads .env and wires DB pool, embedding model and LLM clients into RagService, once."""
     load_dotenv()
@@ -173,7 +194,10 @@ def build_rag_components() -> RagComponents:
         keyword_query_builder=KeywordQueryBuilder(chunk_repository),
         reranker=build_reranker(os.environ),
     )
-    return RagComponents(rag_service=rag_service, database=database, llm_client=llm_client)
+    checkpointer, checkpoint_pool = build_checkpointer(os.environ["DATABASE_URL"])
+    conversation_graph = ConversationGraph(rag_service, QuestionCondenser(llm_client), checkpointer)
+    return RagComponents(rag_service=rag_service, database=database, llm_client=llm_client,
+                         conversation_graph=conversation_graph, checkpoint_pool=checkpoint_pool)
 
 
 def build_question_generation_components() -> QuestionGenerationComponents:

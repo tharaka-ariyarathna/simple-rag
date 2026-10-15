@@ -16,15 +16,19 @@ class LedgerRepository:
         chunks_found: int,
         top_similarity: float | None,
         eval_run_id: int | None = None,
+        conversation_id: str | None = None,
+        standalone_question: str | None = None,  # NULL when the question was searched as asked
     ) -> int:
         """Written after retrieval and before the LLM call, so llm_calls can point at it. Returns the new id."""
         with self.database.connection() as connection:
             row = connection.execute(
                 """INSERT INTO rag_requests
-                       (entry_point, eval_run_id, question, folder, top_k, chunks_found, top_similarity, total_latency_ms)
-                   VALUES (%s, %s, %s, %s, %s, %s, %s, 0)
+                       (entry_point, eval_run_id, question, folder, top_k, chunks_found, top_similarity, total_latency_ms,
+                        conversation_id, standalone_question)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, 0, %s, %s)
                    RETURNING id""",
-                (entry_point, eval_run_id, question, folder, top_k, chunks_found, top_similarity),
+                (entry_point, eval_run_id, question, folder, top_k, chunks_found, top_similarity,
+                 conversation_id, standalone_question),
             ).fetchone()
         return row["id"]
 

@@ -8,9 +8,9 @@ from rag.bootstrap import build_rag_components
 async def lifespan(app: FastAPI):
     # Startup: build long-lived objects once (DB pool, embedding model, LLM client); every request reuses them
     rag_components = build_rag_components()
-    app.state.rag_service = rag_components.rag_service
+    app.state.conversation_graph = rag_components.conversation_graph
     yield
-    # Shutdown: release the HTTP clients and the DB pool
+    # Shutdown: release the HTTP clients and the DB pools
     rag_components.close()
 
 

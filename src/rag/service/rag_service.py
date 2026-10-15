@@ -71,10 +71,16 @@ class RagService:
         top_k: int,
         entry_point: str = "api",
         eval_run_id: int | None = None,
+        conversation_id: str | None = None,
+        standalone_question: str | None = None,  # a follow-up rewritten to make sense alone: searched instead
     ) -> RagAnswer:
         started_at = time.perf_counter()
-        chunks = self.search_chunks(question, folder, top_k)
-        rag_request_id = self.record_request_start(entry_point, question, folder, top_k, chunks, eval_run_id)
+        question_to_answer = standalone_question or question
+        chunks = self.search_chunks(question_to_answer, folder, top_k)
+        rag_request_id = self.record_request_start(
+            entry_point, question, folder, top_k, chunks, eval_run_id, conversation_id,
+            standalone_question if standalone_question and standalone_question != question else None,
+        )
         answer_text = None
         refusal_reason = None
         try:
@@ -82,7 +88,7 @@ class RagService:
                 refusal_reason = REFUSAL_REASON_RETRIEVAL
                 answer_text = NO_RELEVANT_CONTEXT_ANSWER
                 return RagAnswer(answer=answer_text, refusal_reason=refusal_reason)
-            prompt = self.prompt_builder.build(question, chunks)
+            prompt = self.prompt_builder.build(question_to_answer, chunks)
             with llm_call_context("answer", rag_request_id):
                 answer_text = self.llm_client.generate(prompt.system, prompt.user).text
             if answer_text.strip() == NO_RELEVANT_CONTEXT_ANSWER:
@@ -135,7 +141,7 @@ class RagService:
 
     def record_request_start(
         self, entry_point: str, question: str, folder: str | None, top_k: int, chunks: list[dict],
-        eval_run_id: int | None,
+        eval_run_id: int | None, conversation_id: str | None = None, standalone_question: str | None = None,
     ) -> int | None:
         if self.ledger_repository is None:
             return None
@@ -149,6 +155,8 @@ class RagService:
                 # max, not chunks[0]: with hybrid ordering the first chunk is not always the most similar
                 top_similarity=max(float(chunk["similarity"]) for chunk in chunks) if chunks else None,
                 eval_run_id=eval_run_id,
+                conversation_id=conversation_id,
+                standalone_question=standalone_question,
             )
         except Exception as error:  # a broken ledger must never break an answer
             logger.warning("Could not record the request: %s", error)

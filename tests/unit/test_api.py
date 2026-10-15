@@ -5,30 +5,33 @@ never runs: nothing real is started."""
 import pytest
 from fastapi.testclient import TestClient
 from rag.api.main import app
-from rag.api.routes import get_rag_service
+from rag.api.routes import get_conversation_graph
 from rag.constants import INTERNAL_ERROR_DETAIL, LLM_TIMEOUT_DETAIL, LLM_UNAVAILABLE_DETAIL, TOP_K_MAX
 from rag.llm.base import LlmConfigurationError, LlmTimeoutError, LlmUnavailableError
+from rag.memory.conversation_graph import ConversationAnswer
 from rag.service.rag_service import RagAnswer, SourceReference
 
 
 class StubRagService:
+    """Stands in for the conversation graph: records the call and returns a ready-made answer."""
+
     def __init__(self, rag_answer: RagAnswer | None = None, error: Exception | None = None):
         self.rag_answer = rag_answer or RagAnswer(answer="Alice [1].", sources=[SourceReference("a.pdf", "cvs", 0.8)])
         self.error = error
         self.calls = []
 
-    def answer_question(self, question, folder, top_k, entry_point="api", eval_run_id=None):
-        self.calls.append({"question": question, "folder": folder, "top_k": top_k, "entry_point": entry_point})
+    def ask(self, question, folder, top_k, conversation_id=None):
+        self.calls.append({"question": question, "folder": folder, "top_k": top_k, "conversation_id": conversation_id})
         if self.error:
             raise self.error
-        return self.rag_answer
+        return ConversationAnswer(conversation_id or "new-id", "Who is Alice?", self.rag_answer)
 
 
 @pytest.fixture
 def use_service():
     """use_service(stub) -> TestClient whose /chat calls that stub."""
     def install(stub: StubRagService) -> TestClient:
-        app.dependency_overrides[get_rag_service] = lambda: stub
+        app.dependency_overrides[get_conversation_graph] = lambda: stub
         return TestClient(app)
     yield install
     app.dependency_overrides.clear()
@@ -43,7 +46,8 @@ def test_chat_returns_the_answer_and_its_sources(use_service):
 
     assert response.status_code == 200
     assert response.json() == {"answer": "Alice [1].",
-                               "sources": [{"file_name": "a.pdf", "folder": "cvs", "similarity": 0.8}]}
+                               "sources": [{"file_name": "a.pdf", "folder": "cvs", "similarity": 0.8}],
+                               "conversation_id": "new-id", "standalone_question": "Who is Alice?"}
 
 
 def test_chat_strips_the_question_and_forwards_folder_and_top_k(use_service):
@@ -51,7 +55,15 @@ def test_chat_strips_the_question_and_forwards_folder_and_top_k(use_service):
 
     use_service(stub).post("/chat", json={"question": "  Who knows Go?  ", "folder": " cvs ", "top_k": 3})
 
-    assert stub.calls == [{"question": "Who knows Go?", "folder": "cvs", "top_k": 3, "entry_point": "api"}]
+    assert stub.calls == [{"question": "Who knows Go?", "folder": "cvs", "top_k": 3, "conversation_id": None}]
+
+
+def test_chat_continues_the_conversation_it_is_given(use_service):
+    stub = StubRagService()
+
+    body = use_service(stub).post("/chat", json={"question": "And his Python?", "conversation_id": " abc "}).json()
+
+    assert stub.calls[0]["conversation_id"] == "abc" and body["conversation_id"] == "abc"
 
 
 def test_refusal_reason_is_not_part_of_the_response(use_service):
@@ -59,7 +71,7 @@ def test_refusal_reason_is_not_part_of_the_response(use_service):
 
     body = use_service(stub).post("/chat", json={"question": "q"}).json()
 
-    assert body == {"answer": "I couldn't find that in the documents.", "sources": []}
+    assert "refusal_reason" not in body
 
 
 @pytest.mark.parametrize("payload", [
@@ -70,6 +82,8 @@ def test_refusal_reason_is_not_part_of_the_response(use_service):
     {"question": "q", "top_k": TOP_K_MAX + 1},
     {"question": "q", "folder": "  "},
     {"question": "q", "unknown": 1},
+    {"question": "q", "conversation_id": "  "},
+    {"question": "q", "conversation_id": "x" * 101},
 ])
 def test_invalid_requests_are_rejected_before_the_service_runs(use_service, payload):
     stub = StubRagService()

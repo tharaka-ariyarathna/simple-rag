@@ -23,6 +23,17 @@ class TestLedgerRepository:
         assert (request["answer"], request["refusal_reason"], request["total_latency_ms"]) == ("Alice [1].", None,
                                                                                                1234)
 
+    def test_conversation_and_rewritten_question_are_saved_when_given(self, database):
+        ledger = LedgerRepository(database)
+
+        ledger.insert_rag_request("api", "And his Python?", None, 5, chunks_found=1, top_similarity=0.7,
+                                  conversation_id="c-1", standalone_question="What is Nimal Python experience?")
+        ledger.insert_rag_request("mcp", "q", None, 5, chunks_found=1, top_similarity=0.7)
+
+        rows = fetch_all(database, "SELECT conversation_id, standalone_question FROM rag_requests ORDER BY id")
+        assert rows == [{"conversation_id": "c-1", "standalone_question": "What is Nimal Python experience?"},
+                        {"conversation_id": None, "standalone_question": None}]
+
     def test_llm_calls_point_at_their_request(self, database):
         ledger = LedgerRepository(database)
         request_id = ledger.insert_rag_request("mcp", "q", None, 5, chunks_found=1, top_similarity=0.7)

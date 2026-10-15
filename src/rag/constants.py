@@ -113,3 +113,9 @@ MATCHING_CHUNKS_RETRIEVED = 50  # chunks fetched per JD; they are then grouped b
 MATCHING_CUTOFF = 10  # metrics are computed on the top 10 CVs
 MATCHING_MIN_SIMILARITY = 0.0  # ranking, not refusing: the live Q&A path keeps MIN_SIMILARITY
 MATCHING_STRATEGY_WHOLE_JD = "whole_jd"  # the whole JD text is used as one search query
+
+# Conversation memory: a follow-up is rewritten into a standalone question before retrieval
+CONVERSATION_HISTORY_MESSAGES = 6  # last messages (questions and answers) the rewriting LLM sees
+CONDENSE_MAX_ATTEMPTS = 2  # first try plus one repair attempt; after that the raw question is used
+CONDENSED_QUESTION_MAX_LENGTH = 300  # a rewrite is a short question; anything longer is probably an answer
+CONVERSATION_ID_MAX_LENGTH = 100
