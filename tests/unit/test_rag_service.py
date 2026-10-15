@@ -3,7 +3,10 @@ from rag.constants import NO_RELEVANT_CONTEXT_ANSWER
 from rag.llm.base import LlmUnavailableError
 from rag.service.prompt_builder import PromptBuilder
 from rag.service.rag_service import REFUSAL_REASON_LLM, REFUSAL_REASON_RETRIEVAL, RagService, SourceReference
-from tests.fakes import FakeChunkRepository, FakeEmbedder, FakeLedgerRepository, FakeLlmClient, chunk_row
+from rag.service.keyword_query import KeywordQueryBuilder
+from tests.fakes import (
+    FakeChunkRepository, FakeEmbedder, FakeKeywordRepository, FakeLedgerRepository, FakeLlmClient, chunk_row,
+)
 
 
 def make_service(rows=None, llm=None, ledger=None, embedder=None) -> RagService:
@@ -86,6 +89,42 @@ def test_list_folders_counts_chunks_of_the_active_model():
 
     assert service.list_folders() == {"cvs": 12}
 
+
+
+class TestHybridSearch:
+    def service_with_keywords(self, repository: FakeChunkRepository) -> RagService:
+        builder = KeywordQueryBuilder(FakeKeywordRepository({"python": 24}, total_chunks=100))
+        return RagService(repository, FakeEmbedder(), PromptBuilder(), FakeLlmClient(),
+                          keyword_query_builder=builder)
+
+    def test_keyword_terms_of_the_question_are_passed_to_the_search(self):
+        repository = FakeChunkRepository()
+
+        self.service_with_keywords(repository).search_chunks("Who knows python?", None, top_k=5)
+
+        assert repository.search_calls[0]["keyword_terms"] == ["python"]
+
+    def test_keywords_can_be_switched_off_for_a_search(self):
+        repository = FakeChunkRepository()
+
+        self.service_with_keywords(repository).search_chunks("Who knows python?", None, top_k=5, use_keywords=False)
+
+        assert repository.search_calls[0]["keyword_terms"] == []
+
+    def test_without_a_keyword_builder_the_search_is_vector_only(self):
+        repository = FakeChunkRepository()
+
+        RagService(repository, FakeEmbedder(), PromptBuilder(), FakeLlmClient()).search_chunks("python", None, 5)
+
+        assert repository.search_calls[0]["keyword_terms"] == []
+
+    def test_ledger_records_the_highest_similarity_even_when_hybrid_order_puts_it_second(self):
+        ledger = FakeLedgerRepository()
+        rows = [chunk_row("keyword-match.pdf", similarity=0.61), chunk_row("closest.pdf", similarity=0.72)]
+
+        make_service(rows=rows, ledger=ledger).answer_question("q", None, top_k=5)
+
+        assert ledger.requests[1]["top_similarity"] == pytest.approx(0.72)
 
 class TestLedger:
     def test_answered_request_is_recorded_from_start_to_finish(self):

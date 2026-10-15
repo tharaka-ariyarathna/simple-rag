@@ -18,6 +18,7 @@ from rag.llm.retrying_client import RetryingLlmClient
 from rag.repository.chunk_repository import ChunkRepository
 from rag.repository.db import Database
 from rag.repository.ledger_repository import LedgerRepository
+from rag.service.keyword_query import KeywordQueryBuilder
 from rag.service.prompt_builder import PromptBuilder
 from rag.service.rag_service import RagService
 
@@ -153,12 +154,14 @@ def build_rag_components() -> RagComponents:
     database = Database(os.environ["DATABASE_URL"])
     ledger_repository = LedgerRepository(database)
     llm_client = build_answer_llm_client(providers, ledger_repository, os.environ)
+    chunk_repository = ChunkRepository(database)
     rag_service = RagService(
-        repository=ChunkRepository(database),
+        repository=chunk_repository,
         embedder=SentenceTransformerEmbedder(),
         prompt_builder=PromptBuilder(),
         llm_client=llm_client,
         ledger_repository=ledger_repository,
+        keyword_query_builder=KeywordQueryBuilder(chunk_repository),
     )
     return RagComponents(rag_service=rag_service, database=database, llm_client=llm_client)
 

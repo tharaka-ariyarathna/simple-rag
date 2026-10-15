@@ -17,8 +17,9 @@ class SearchStub:
         self.unfiltered = unfiltered if unfiltered is not None else self.filtered
         self.calls = []
 
-    def search_chunks(self, question, folder, top_k, min_similarity=None):
-        self.calls.append({"question": question, "folder": folder, "top_k": top_k, "min_similarity": min_similarity})
+    def search_chunks(self, question, folder, top_k, min_similarity=None, use_keywords=True):
+        self.calls.append({"question": question, "folder": folder, "top_k": top_k, "min_similarity": min_similarity,
+                           "use_keywords": use_keywords})
         return self.unfiltered if min_similarity == 0.0 else self.filtered
 
 
@@ -172,7 +173,8 @@ class TestMatchingEval:
         ranking = matching_eval.rank_candidates(stub, "JD text", chunks_retrieved=50)
 
         assert ranking == [("cv_002", 0.9), ("cv_001", 0.8)]
-        assert stub.calls == [{"question": "JD text", "folder": None, "top_k": 50, "min_similarity": 0.0}]
+        assert stub.calls == [{"question": "JD text", "folder": None, "top_k": 50, "min_similarity": 0.0,
+                               "use_keywords": False}]  # a whole JD is not a keyword query
 
     def test_evaluate_jd(self):
         stub = SearchStub(filtered=[chunk_row("cv_002.pdf", similarity=0.9), chunk_row("cv_001.pdf", similarity=0.8)])

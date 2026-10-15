@@ -2,7 +2,7 @@ import re
 import numpy as np
 from psycopg import sql
 from rag.repository.db import Database
-from rag.constants import RETRIEVAL_TOP_K, MIN_SIMILARITY
+from rag.constants import HYBRID_VECTOR_CANDIDATES, MIN_SIMILARITY, RETRIEVAL_TOP_K, RRF_K
 
 
 class ChunkRepository:
@@ -61,28 +61,95 @@ class ChunkRepository:
         top_k: int = RETRIEVAL_TOP_K,
         folder: str | None = None,
         min_similarity: float = MIN_SIMILARITY,
+        keyword_terms: list[str] | None = None,
     ) -> list[dict]:
-        """Nearest chunks by cosine distance (<=>). similarity = 1 - distance.
-        Chunks below min_similarity are dropped, so an empty list means nothing relevant was found."""
+        """Hybrid search: chunks ranked by cosine similarity and, when keyword_terms are given, by full-text match,
+        merged with reciprocal rank fusion (RRF). similarity = 1 - cosine distance.
+
+        Only chunks at or above min_similarity take part in either ranking, so keywords reorder relevant chunks
+        but never bring in one below the threshold, and an empty list still means nothing relevant was found.
+        Without keyword_terms the order is plain vector order. Rows also carry vector_rank, keyword_rank
+        (None = no keyword match) and fused_score."""
         # The cast must match the index expression exactly, or Postgres falls back to a full scan
         distance = sql.SQL("(embedding::vector({dimension}) <=> %(query_vector)s)").format(
             dimension=sql.Literal(int(dimension))
         )
         query = sql.SQL(
-            """SELECT source, folder, chunk_index, content, 1 - {distance} AS similarity
+            """WITH keyword_query AS (
+                   -- the terms OR-ed together; quote_literal()::tsquery takes each term exactly as given
+                   SELECT string_agg(quote_literal(term), ' | ')::tsquery AS query
+                   FROM unnest(%(keyword_terms)s::text[]) AS term
+               ),
+               nearest AS (
+                   SELECT id, {distance} AS distance FROM chunks
+                   WHERE embedding_model = %(embedding_model)s
+                     AND (%(folder)s::text IS NULL OR folder = %(folder)s)
+                   ORDER BY {distance}
+                   LIMIT %(vector_candidates)s
+               ),
+               vector_hits AS (
+                   SELECT id, row_number() OVER (ORDER BY distance) AS vector_rank
+                   FROM nearest WHERE 1 - distance >= %(min_similarity)s
+               ),
+               keyword_hits AS (
+                   -- every keyword match above the threshold, not only the vector candidates
+                   SELECT id, row_number() OVER (ORDER BY ts_rank_cd(search_vector, keyword_query.query) DESC, id)
+                              AS keyword_rank
+                   FROM chunks, keyword_query
+                   WHERE keyword_query.query IS NOT NULL
+                     AND search_vector @@ keyword_query.query
+                     AND embedding_model = %(embedding_model)s
+                     AND (%(folder)s::text IS NULL OR folder = %(folder)s)
+                     AND 1 - {distance} >= %(min_similarity)s
+               )
+               SELECT source, folder, chunk_index, content, 1 - {distance} AS similarity,
+                      vector_rank, keyword_rank,
+                      -- float8, or psycopg returns numeric arithmetic as Decimal
+                      (coalesce(1.0 / (%(rrf_k)s + vector_rank), 0)
+                       + coalesce(1.0 / (%(rrf_k)s + keyword_rank), 0))::float8 AS fused_score
                FROM chunks
-               WHERE embedding_model = %(embedding_model)s
-                 AND (%(folder)s::text IS NULL OR folder = %(folder)s)
-                 AND 1 - {distance} >= %(min_similarity)s
-               ORDER BY {distance}
+               LEFT JOIN vector_hits USING (id)
+               LEFT JOIN keyword_hits USING (id)
+               WHERE vector_rank IS NOT NULL OR keyword_rank IS NOT NULL
+               ORDER BY fused_score DESC, similarity DESC
                LIMIT %(top_k)s"""
         ).format(distance=distance)
         with self.database.connection() as connection:
+            # An HNSW index scan returns at most hnsw.ef_search rows (default 40), fewer than the candidates asked for
+            connection.execute("SELECT set_config('hnsw.ef_search', %s, true)",
+                               (str(max(HYBRID_VECTOR_CANDIDATES, top_k)),))
             return connection.execute(
                 query,
                 {"query_vector": query_vector, "embedding_model": embedding_model, "folder": folder,
-                 "top_k": top_k, "min_similarity": min_similarity},
+                 "top_k": top_k, "min_similarity": min_similarity, "keyword_terms": keyword_terms or [],
+                 "vector_candidates": max(HYBRID_VECTOR_CANDIDATES, top_k), "rrf_k": RRF_K},
             ).fetchall()
+
+    def question_lexemes(self, question: str) -> list[str]:
+        """The question's words exactly as the keyword index stores them (same search_text() normalisation,
+        lower-cased, de-duplicated), in the order they first appear."""
+        with self.database.connection() as connection:
+            rows = connection.execute(
+                """SELECT lexeme FROM unnest(to_tsvector('simple', search_text(%s)))
+                   ORDER BY positions[1]""",
+                (question,),
+            ).fetchall()
+        return [row["lexeme"] for row in rows]
+
+    def term_chunk_counts(self, terms: list[str], embedding_model: str) -> tuple[dict[str, int], int]:
+        """How many chunks of the model contain each term, and how many chunks the model has in total."""
+        with self.database.connection() as connection:
+            total = connection.execute(
+                "SELECT count(*) AS chunk_count FROM chunks WHERE embedding_model = %s", (embedding_model,)
+            ).fetchone()["chunk_count"]
+            rows = connection.execute(
+                """SELECT term, (SELECT count(*) FROM chunks
+                                 WHERE embedding_model = %(embedding_model)s
+                                   AND search_vector @@ quote_literal(term)::tsquery) AS chunk_count
+                   FROM unnest(%(terms)s::text[]) AS term""",
+                {"terms": terms, "embedding_model": embedding_model},
+            ).fetchall()
+        return {row["term"]: row["chunk_count"] for row in rows}, total
 
     def list_chunks(self, embedding_model: str) -> list[dict]:
         """Every chunk of one model, in document order (used by evaluation, which reads all of them)."""

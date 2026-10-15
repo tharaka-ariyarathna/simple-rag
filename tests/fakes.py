@@ -108,6 +108,22 @@ class FakeChunkRepository:
         return self.folder_counts
 
 
+class FakeKeywordRepository:
+    """question_lexemes splits on spaces (lower-cased, de-duplicated); term_chunk_counts reads a given table."""
+
+    def __init__(self, chunk_counts: dict[str, int] | None = None, total_chunks: int = 100):
+        self.chunk_counts = chunk_counts or {}
+        self.total_chunks = total_chunks
+        self.counted_terms: list[list[str]] = []
+
+    def question_lexemes(self, question: str) -> list[str]:
+        return list(dict.fromkeys(question.lower().strip("?").split()))
+
+    def term_chunk_counts(self, terms: list[str], embedding_model: str) -> tuple[dict[str, int], int]:
+        self.counted_terms.append(terms)
+        return {term: self.chunk_counts.get(term, 0) for term in terms}, self.total_chunks
+
+
 class FakeLedgerRepository:
     """Keeps ledger rows in lists. fail=True makes every write raise, like a database that went away."""
 

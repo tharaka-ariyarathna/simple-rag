@@ -20,8 +20,28 @@ DB_POOL_MAX_SIZE = 10
 
 # Retrieval
 RETRIEVAL_TOP_K = 5
-MIN_SIMILARITY = 0.5  # chunks scoring below this are treated as not relevant
+# Chunks scoring below this are treated as not relevant; with none left the question is refused without the LLM.
+# Measured on the CV set: in-domain questions pass 120-150 of 160 chunks, off-topic ones top out at 0.44-0.49,
+# so 0.4 would let off-topic questions through to the LLM.
+MIN_SIMILARITY = 0.5
 NO_RELEVANT_CONTEXT_ANSWER = "I couldn't find that in the documents."
+
+# Hybrid search: vector ranking + keyword (Postgres full-text) ranking, merged with reciprocal rank fusion.
+# Keywords only reorder chunks that already passed MIN_SIMILARITY; they never bring in a chunk below it.
+RRF_K = 60  # standard RRF constant: score = sum of 1 / (RRF_K + rank) over the rankings a chunk appears in
+HYBRID_VECTOR_CANDIDATES = 100  # nearest chunks taken from the vector ranking before fusion
+KEYWORD_MAX_CHUNK_FRACTION = 0.5  # terms found in more chunks than this share say nothing about relevance
+# Dropped from questions before the keyword search: they appear in questions but not as a reason to pick a chunk.
+# "python" is in 24% of the CV chunks, so a frequency cut alone (without this list) would need to stay high.
+KEYWORD_STOP_WORDS = frozenset("""
+    a about above after all also am an and any anyone are as at be been best better can candidate candidates
+    could did do does done for from good had has have having he her him his how i if in into is it its me
+    more most my no not of on or our person people role roles she should so some someone than that the
+    their them then there these they this those to us was we were what when where which who whom whose why
+    will with would you your based experience experienced
+    work works worked working know knows known knowledge use used uses using familiar skilled skill skills
+    proficient strong year years find show list give tell please
+""".split())
 
 # LLM
 # Answering tries these providers in order (override with ANSWER_LLM_CHAIN in .env)
@@ -42,7 +62,7 @@ GEMINI_BASE_URL = "https://generativelanguage.googleapis.com"
 CLOUD_LLM_TIMEOUT_SECONDS = 60
 LOCAL_LLM_TIMEOUT_SECONDS = 240  # 3B model on CPU can be slow for long answers
 LLM_RETRY_DELAYS_SECONDS = (2, 4, 8)  # local question generation: 3 retries, waiting longer each time
-LLM_CONTEXT_TOKENS=4096
+LLM_CONTEXT_TOKENS=8192  # Ollama only: room for ~10 chunks of ~400 tokens; Ollama silently cuts what does not fit
 LLM_TEMPERATURE=0.1  # low temperature = more deterministic, less creative
 
 # API request limits
