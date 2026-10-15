@@ -3,8 +3,9 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from dotenv import load_dotenv
 from rag.constants import (
-    DEFAULT_ANSWER_LLM_CHAIN, GEMINI_MODEL, GROQ_BASE_URL, GROQ_MODEL, OLLAMA_MODEL, OPENROUTER_BASE_URL,
-    OPENROUTER_MODEL,
+    CLOUD_QUESTION_GENERATION_DELAY_SECONDS, DEFAULT_ANSWER_LLM_CHAIN, DEFAULT_QUESTION_LLM_CHAIN, GEMINI_MODEL,
+    GROQ_BASE_URL, GROQ_MODEL, OLLAMA_MODEL, OPENROUTER_BASE_URL, OPENROUTER_MODEL, QUESTION_GENERATION_DELAY_SECONDS,
+    QUESTION_LLM_COOLDOWN_SECONDS,
 )
 from rag.embedding.sentence_transformer_embedder import SentenceTransformerEmbedder
 from rag.llm.base import LlmClient
@@ -20,7 +21,7 @@ from rag.repository.ledger_repository import LedgerRepository
 from rag.service.prompt_builder import PromptBuilder
 from rag.service.rag_service import RagService
 
-# Providers ANSWER_LLM_CHAIN may name, and the .env variable holding each one's API key (None = no key needed)
+# Providers ANSWER_LLM_CHAIN / QUESTION_LLM_CHAIN may name, and the .env variable holding each one's API key (None = no key needed)
 PROVIDER_API_KEY_VARIABLES = {
     "groq": "GROQ_API_KEY",
     "openrouter": "OPENROUTER_API_KEY",
@@ -49,10 +50,11 @@ class RagComponents:
 
 @dataclass
 class QuestionGenerationComponents:
-    """What synthetic question generation needs: the database and the local LLM. No embedding model, no cloud keys."""
+    """What synthetic question generation needs: the database and the question LLM chain. No embedding model."""
 
     database: Database
     llm_client: LlmClient
+    delay_seconds: float  # pause between chunks, to stay under a cloud provider's per-minute limit
 
     def close(self) -> None:
         self.llm_client.close()
@@ -65,13 +67,21 @@ def setting(environ: Mapping[str, str], name: str, default: str) -> str:
 
 
 def answer_chain_providers(environ: Mapping[str, str]) -> list[str]:
-    """Provider names from ANSWER_LLM_CHAIN, in fallback order. Fails when a name is unknown or a key is missing."""
-    chain = setting(environ, "ANSWER_LLM_CHAIN", DEFAULT_ANSWER_LLM_CHAIN)
+    return chain_providers(environ, "ANSWER_LLM_CHAIN", DEFAULT_ANSWER_LLM_CHAIN)
+
+
+def question_chain_providers(environ: Mapping[str, str]) -> list[str]:
+    return chain_providers(environ, "QUESTION_LLM_CHAIN", DEFAULT_QUESTION_LLM_CHAIN)
+
+
+def chain_providers(environ: Mapping[str, str], variable: str, default: str) -> list[str]:
+    """Provider names from a chain variable, in fallback order. Fails when a name is unknown or a key is missing."""
+    chain = setting(environ, variable, default)
     providers = [name.strip().lower() for name in chain.split(",") if name.strip()]
     unknown = [name for name in providers if name not in PROVIDER_API_KEY_VARIABLES]
     if not providers or unknown:
         raise StartupConfigurationError(
-            f"ANSWER_LLM_CHAIN={chain!r} must list providers from: {', '.join(PROVIDER_API_KEY_VARIABLES)}"
+            f"{variable}={chain!r} must list providers from: {', '.join(PROVIDER_API_KEY_VARIABLES)}"
             + (f" (unknown: {', '.join(unknown)})" if unknown else "")
         )
     missing_keys = [
@@ -80,13 +90,13 @@ def answer_chain_providers(environ: Mapping[str, str]) -> list[str]:
     ]
     if missing_keys:
         raise StartupConfigurationError(
-            f"Missing API keys for ANSWER_LLM_CHAIN={','.join(providers)}: {', '.join(missing_keys)}. Add them to .env."
+            f"Missing API keys for {variable}={','.join(providers)}: {', '.join(missing_keys)}. Add them to .env."
         )
     return providers
 
 
 def build_provider_client(provider: str, environ: Mapping[str, str]) -> LlmClient:
-    """One real provider client. Keys were already checked by answer_chain_providers."""
+    """One real provider client. Keys were already checked by chain_providers."""
     if provider == "groq":
         return OpenAiCompatibleLlmClient("Groq", GROQ_BASE_URL, setting(environ, "GROQ_API_KEY", ""),
                                          setting(environ, "GROQ_MODEL", GROQ_MODEL))
@@ -115,11 +125,25 @@ def build_answer_llm_client(
     ])
 
 
-def build_question_llm_client(ledger_repository: LedgerRepository, environ: Mapping[str, str]) -> RetryingLlmClient:
-    """Question generation runs on the local model only: retried with backoff, never sent to a cloud provider."""
-    return RetryingLlmClient(
-        LoggingLlmClient(build_provider_client("ollama", environ), "ollama", "primary", ledger_repository)
-    )
+def build_question_llm_client(
+    providers: list[str], ledger_repository: LedgerRepository, environ: Mapping[str, str]
+) -> FallbackLlmClient:
+    """Each provider is retried with backoff before the next one is tried. A provider that still fails is skipped
+    for QUESTION_LLM_COOLDOWN_SECONDS, so a capped OpenRouter is not retried for every remaining chunk."""
+    return FallbackLlmClient([
+        RetryingLlmClient(
+            LoggingLlmClient(build_provider_client(provider, environ), provider, fallback_role(position),
+                             ledger_repository)
+        )
+        for position, provider in enumerate(providers)
+    ], cooldown_seconds=QUESTION_LLM_COOLDOWN_SECONDS)
+
+
+def question_generation_delay(providers: list[str]) -> float:
+    """Cloud providers (the ones that need an API key) get a pause between chunks; a local-only chain does not."""
+    if any(PROVIDER_API_KEY_VARIABLES[provider] for provider in providers):
+        return CLOUD_QUESTION_GENERATION_DELAY_SECONDS
+    return QUESTION_GENERATION_DELAY_SECONDS
 
 
 def build_rag_components() -> RagComponents:
@@ -141,6 +165,8 @@ def build_rag_components() -> RagComponents:
 
 def build_question_generation_components() -> QuestionGenerationComponents:
     load_dotenv()
+    providers = question_chain_providers(os.environ)  # before the database: a missing key fails at once
     database = Database(os.environ["DATABASE_URL"])
-    llm_client = build_question_llm_client(LedgerRepository(database), os.environ)
-    return QuestionGenerationComponents(database=database, llm_client=llm_client)
+    llm_client = build_question_llm_client(providers, LedgerRepository(database), os.environ)
+    return QuestionGenerationComponents(database=database, llm_client=llm_client,
+                                        delay_seconds=question_generation_delay(providers))

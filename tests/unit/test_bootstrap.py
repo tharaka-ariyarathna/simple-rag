@@ -3,8 +3,11 @@ The environment is passed in as a plain dict, so these tests never read the real
 import pytest
 from rag.bootstrap import (
     StartupConfigurationError, answer_chain_providers, build_answer_llm_client, build_question_llm_client,
+    question_chain_providers, question_generation_delay,
 )
-from rag.constants import GROQ_MODEL, OLLAMA_MODEL, OPENROUTER_MODEL
+from rag.constants import (
+    CLOUD_QUESTION_GENERATION_DELAY_SECONDS, GROQ_MODEL, OLLAMA_MODEL, OPENROUTER_MODEL, QUESTION_LLM_COOLDOWN_SECONDS,
+)
 from rag.llm.fallback_client import FallbackLlmClient
 from rag.llm.ollama_client import OllamaLlmClient
 from rag.llm.openai_compatible_client import OpenAiCompatibleLlmClient
@@ -67,12 +70,30 @@ def test_model_ids_can_be_overridden_in_env():
         client.close()
 
 
-def test_question_client_is_the_local_model_with_retries_and_needs_no_cloud_keys():
-    client = build_question_llm_client(FakeLedgerRepository(), {})
-    try:
-        assert isinstance(client, RetryingLlmClient)
-        assert client.retry_delays_seconds == [2, 4, 8]
-        assert (client.inner_client.provider, client.inner_client.role) == ("ollama", "primary")
-        assert isinstance(client.inner_client.inner_client, OllamaLlmClient)
-    finally:
-        client.close()
+class TestQuestionChain:
+    def test_default_is_the_local_model_and_needs_no_cloud_keys(self):
+        assert question_chain_providers({}) == ["ollama"]
+
+    def test_openrouter_then_local_needs_the_openrouter_key(self):
+        with pytest.raises(StartupConfigurationError, match="QUESTION_LLM_CHAIN.*OPENROUTER_API_KEY"):
+            question_chain_providers({"QUESTION_LLM_CHAIN": "openrouter,ollama"})
+        assert question_chain_providers({"QUESTION_LLM_CHAIN": "openrouter,ollama", **KEYS}) == ["openrouter", "ollama"]
+
+    def test_each_provider_is_retried_then_skipped_for_a_while_after_failing(self):
+        client = build_question_llm_client(["openrouter", "ollama"], FakeLedgerRepository(), KEYS)
+        try:
+            assert isinstance(client, FallbackLlmClient)
+            assert client.cooldown_seconds == QUESTION_LLM_COOLDOWN_SECONDS
+            assert all(isinstance(retrying, RetryingLlmClient) and retrying.retry_delays_seconds == [2, 4, 8]
+                       for retrying in client.clients)
+            logged = [retrying.inner_client for retrying in client.clients]
+            assert [(entry.provider, entry.role) for entry in logged] == [("openrouter", "primary"),
+                                                                         ("ollama", "fallback_1")]
+            assert isinstance(logged[0].inner_client, OpenAiCompatibleLlmClient)
+            assert isinstance(logged[1].inner_client, OllamaLlmClient)
+        finally:
+            client.close()
+
+    def test_cloud_providers_get_a_pause_between_chunks_and_local_only_does_not(self):
+        assert question_generation_delay(["openrouter", "ollama"]) == CLOUD_QUESTION_GENERATION_DELAY_SECONDS
+        assert question_generation_delay(["ollama"]) == 0

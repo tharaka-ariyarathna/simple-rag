@@ -24,8 +24,12 @@ MIN_SIMILARITY = 0.5  # chunks scoring below this are treated as not relevant
 NO_RELEVANT_CONTEXT_ANSWER = "I couldn't find that in the documents."
 
 # LLM
-# Answering tries these providers in order (override with ANSWER_LLM_CHAIN in .env). Question generation is local only.
+# Answering tries these providers in order (override with ANSWER_LLM_CHAIN in .env)
 DEFAULT_ANSWER_LLM_CHAIN = "groq,openrouter,ollama"
+# Synthetic question generation (override with QUESTION_LLM_CHAIN, e.g. "openrouter,ollama")
+DEFAULT_QUESTION_LLM_CHAIN = "ollama"
+# Question generation: a provider that failed after its retries is skipped this long (e.g. OpenRouter's daily cap)
+QUESTION_LLM_COOLDOWN_SECONDS = 900
 # Model ids are defaults; GROQ_MODEL, OPENROUTER_MODEL, OLLAMA_MODEL and GEMINI_MODEL in .env override them
 GROQ_BASE_URL = "https://api.groq.com/openai/v1"
 GROQ_MODEL = "openai/gpt-oss-120b"
@@ -67,7 +71,9 @@ EVAL_MIN_MRR = 0.6
 EVAL_MAX_REGRESSION = 0.03  # fails when a metric drops more than this against the previous run
 EVAL_WORST_MISSES_SHOWN = 10
 QUESTIONS_PER_CHUNK = 2
-QUESTION_GENERATION_DELAY_SECONDS = 0.0  # pause between generator calls; 0 because generation runs locally
+QUESTION_GENERATION_DELAY_SECONDS = 0.0  # pause between generator calls when the chain is local only
+# ...and when it includes a cloud provider: OpenRouter's free models allow 20 requests a minute
+CLOUD_QUESTION_GENERATION_DELAY_SECONDS = 3.5
 EVAL_ANSWERABLE_SAMPLE = 20  # synthetic questions run through the full pipeline to measure false refusals
 UNANSWERABLE_QUESTIONS_PATH = "evaluation/data/unanswerable.json"  # relative to the rag package
 EVAL_MAX_HALLUCINATION_RATE = 0.1  # unanswerable questions that got an answer (starting guess)

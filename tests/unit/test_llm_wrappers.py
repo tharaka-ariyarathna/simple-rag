@@ -89,6 +89,51 @@ class TestFallback:
         with pytest.raises(ValueError):
             FallbackLlmClient([])
 
+    def test_without_cooldown_a_failed_client_is_tried_again_on_the_next_call(self):
+        primary = SequenceLlmClient([LlmUnavailableError("busy")], answer="from primary")
+        client = FallbackLlmClient([primary, FakeLlmClient(answer="from second")])
+
+        assert client.generate("s", "u").text == "from second"
+        assert client.generate("s", "u").text == "from primary"
+
+
+class TestFallbackCooldown:
+    def setup_method(self):
+        self.now = 1000.0
+
+    def clock(self):
+        return self.now
+
+    def test_failed_client_is_skipped_until_its_cooldown_ends(self):
+        capped = SequenceLlmClient([LlmUnavailableError("429 daily cap")], answer="from openrouter")
+        local = FakeLlmClient(answer="from local")
+        client = FallbackLlmClient([capped, local], cooldown_seconds=900, clock=self.clock)
+
+        assert client.generate("s", "u").text == "from local"
+        self.now += 899
+        assert client.generate("s", "u").text == "from local"
+        assert len(capped.calls) == 1  # not asked again during the cooldown
+        self.now += 1
+        assert client.generate("s", "u").text == "from openrouter"
+
+    def test_when_every_client_is_cooling_down_all_are_tried_anyway(self):
+        first = SequenceLlmClient([LlmUnavailableError("a"), LlmUnavailableError("a again")], answer="first ok")
+        second = SequenceLlmClient([LlmTimeoutError("b")], answer="second ok")
+        client = FallbackLlmClient([first, second], cooldown_seconds=900, clock=self.clock)
+
+        with pytest.raises(LlmTimeoutError):
+            client.generate("s", "u")  # both fail and start cooling down
+        assert client.generate("s", "u").text == "second ok"  # first fails again, second recovered
+        assert len(first.calls) == 2 and len(second.calls) == 2
+
+    def test_configuration_error_does_not_start_a_cooldown_it_stops(self):
+        broken = FakeLlmClient(error=LlmConfigurationError("401"))
+        client = FallbackLlmClient([broken, FakeLlmClient()], cooldown_seconds=900, clock=self.clock)
+
+        with pytest.raises(LlmConfigurationError):
+            client.generate("s", "u")
+        assert client.skipped_until == [0.0, 0.0]
+
 
 class TestRetrying:
     def test_retries_recoverable_errors_with_growing_delays_until_it_answers(self):

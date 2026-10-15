@@ -1,6 +1,8 @@
-"""Writes synthetic test questions for every chunk that has none yet, with the local LLM. Resumable: stop it any time.
+"""Writes synthetic test questions for every chunk that has none yet. Resumable: stop it any time.
 
-When the local LLM keeps failing (after its retries), the run logs the error and stops with exit code 1.
+Uses QUESTION_LLM_CHAIN from .env (default: the local Ollama model; e.g. "openrouter,ollama" falls back to the
+local model when OpenRouter is capped). When every provider keeps failing (after its retries), the run logs the
+error and stops with exit code 1.
 Run from src:  python -m rag.evaluation.generate_questions [--limit N]
 """
 import argparse
@@ -43,8 +45,8 @@ def process_chunks(
             summary.unusable_replies += 1
             print(f"{label}: unusable reply, retried next run ({error})")
             continue
-        except LlmError as error:  # retries are used up, or the setup is wrong: more chunks would fail the same way
-            logger.error("Stopping at %s: the local LLM failed: %s. Fix it and run again to resume.", label, error)
+        except LlmError as error:  # every provider used up its retries, or the setup is wrong: more would fail too
+            logger.error("Stopping at %s: the question LLM failed: %s. Fix it and run again to resume.", label, error)
             summary.stopped_by = str(error)
             break
         question_repository.save_questions(chunk["source"], chunk["chunk_index"], generated.questions, generated.model)
@@ -75,7 +77,9 @@ def generate_questions(limit: int | None) -> bool:
             pending_chunks = pending_chunks[:limit]
         print(f"{len(pending_chunks)} chunks to process ({len(processed_keys)} already done).")
 
-        summary = process_chunks(pending_chunks, QuestionGenerator(components.llm_client), question_repository)
+        print(f"Question LLM: {components.llm_client.model_name}")
+        summary = process_chunks(pending_chunks, QuestionGenerator(components.llm_client), question_repository,
+                                 delay_seconds=components.delay_seconds)
         print(f"{'Stopped' if summary.stopped_by else 'Done'}: {summary.saved_questions} questions saved, "
               f"{summary.skipped_chunks} chunks skipped, {summary.unusable_replies} unusable replies.")
         return summary.stopped_by is None
