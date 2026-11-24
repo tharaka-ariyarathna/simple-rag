@@ -254,3 +254,16 @@ class TestLedger:
         make_service(rows=[], ledger=ledger).answer_question("q", None, top_k=5, entry_point="eval", eval_run_id=9)
 
         assert ledger.requests[1]["eval_run_id"] == 9
+
+
+def test_a_search_limited_to_named_candidates_uses_the_lower_threshold():
+    from rag.constants import MIN_SIMILARITY_FILTERED
+    repository = FakeChunkRepository([])
+    service = RagService(repository, FakeEmbedder(), PromptBuilder(), FakeLlmClient())
+
+    service.search_chunks("q", None, 5, candidate_ids=[17])
+    service.search_chunks("q", None, 5)
+
+    assert repository.search_calls[0]["min_similarity"] == MIN_SIMILARITY_FILTERED
+    assert repository.search_calls[0]["candidate_ids"] == [17]
+    assert "min_similarity" not in repository.search_calls[1]  # the repository default (MIN_SIMILARITY)

@@ -10,6 +10,7 @@ from rag.evaluation.retrieval_eval import (
     OUTCOME_HIT, OUTCOME_UNMATCHABLE, RetrievalCase, compute_metrics, evaluate_case, judge,
 )
 from rag.evaluation.run_settings import collect_settings, current_git_commit
+from rag.service.candidate_names import NameResolver
 from rag.repository.chunk_repository import ChunkRepository
 from rag.repository.eval_repository import EvalRepository
 from rag.repository.question_repository import QuestionRepository
@@ -59,7 +60,8 @@ def run_retrieval_eval(top_k: int) -> bool:
         results = []
         for position, row in enumerate(questions, start=1):
             case = RetrievalCase(row["question"], row["source"], row["evidence"])
-            results.append(evaluate_case(components.rag_service, case, all_chunks, top_k))
+            results.append(evaluate_case(components.rag_service, case, all_chunks, top_k,
+                                         NameResolver(components.candidate_repository)))
             if position % 25 == 0:
                 print(f"  {position}/{len(questions)} questions done")
 

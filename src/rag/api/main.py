@@ -9,6 +9,8 @@ async def lifespan(app: FastAPI):
     # Startup: build long-lived objects once (DB pool, embedding model, LLM client); every request reuses them
     rag_components = build_rag_components()
     app.state.conversation_graph = rag_components.conversation_graph
+    app.state.candidate_repository = rag_components.candidate_repository
+    app.state.match_graph = rag_components.match_graph
     yield
     # Shutdown: release the HTTP clients and the DB pools
     rag_components.close()

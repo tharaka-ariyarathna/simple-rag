@@ -11,9 +11,7 @@ from rag.llm.call_context import current_purpose, current_rag_request_id
 
 class WordTokenizer:
     """One token per whitespace-separated word, so token counts are easy to work out by hand.
-    Tokens without a letter or digit (a lone ".") are not counted: the chunker currently appends a stray ". "
-    to the last piece of a text (see the xfail test in test_chunker.py), and counting it would make every
-    other chunker test depend on that bug."""
+    Tokens without a letter or digit (a lone ".") are not counted."""
 
     def encode(self, text: str, add_special_tokens: bool = False) -> list[str]:
         return [word for word in text.split() if any(character.isalnum() for character in word)]

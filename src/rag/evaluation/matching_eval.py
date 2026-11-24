@@ -8,7 +8,7 @@ from rag.service.rag_service import RagService
 OUTCOME_EVALUATED = "evaluated"
 METRIC_NAMES = ("ndcg_at_k", "recall_at_k", "precision_at_k", "mrr")
 REGRESSION_METRICS = ("ndcg_at_k", "recall_at_k")
-PROTOCOL_KEYS = ("cutoff", "chunks_retrieved", "jd_count")  # runs are only comparable when these match
+PROTOCOL_KEYS = ("cutoff", "chunks_retrieved", "jd_count", "strategy")  # runs are only comparable when these match
 
 
 def candidate_id_of(source: str) -> str:
@@ -34,7 +34,27 @@ def rank_candidates(rag_service: RagService, query_text: str, chunks_retrieved: 
 def evaluate_jd(
     rag_service: RagService, jd_id: str, jd_text: str, labels: dict[str, int], chunks_retrieved: int, cutoff: int
 ) -> dict:
-    ranking = rank_candidates(rag_service, jd_text, chunks_retrieved)
+    return score_ranking(jd_id, rank_candidates(rag_service, jd_text, chunks_retrieved), labels, cutoff)
+
+
+def evaluate_match(jd_id: str, match_result: dict, cv_id_by_candidate: dict[int, str], labels: dict[str, int],
+                   cutoff: int) -> dict:
+    """Scores a MatchGraph result: the judged ranking first, then the CVs only the whole-JD search found (the judge
+    saw at most the shortlist). Also reports shortlist recall: relevant CVs that reached the judge at all."""
+    judged = [(cv_id_by_candidate[c["candidate_id"]], c["score"]) for c in match_result["candidates"]]
+    judged_ids = {cv_id for cv_id, _ in judged}
+    rest = [(cv_id_by_candidate[cid], 0.0) for cid in match_result["whole_jd_order"]
+            if cid in cv_id_by_candidate and cv_id_by_candidate[cid] not in judged_ids]
+    shortlist = {cv_id_by_candidate[cid] for cid in match_result["shortlist"] if cid in cv_id_by_candidate}
+    relevant = {cv_id for cv_id, grade in labels.items() if grade >= 1}
+    shortlist_recall = len(relevant & shortlist) / min(len(relevant), len(shortlist)) if relevant and shortlist else 0.0
+    result = score_ranking(jd_id, judged + rest, labels, cutoff)
+    result["details"]["shortlist_recall"] = shortlist_recall
+    result["details"]["requirements"] = [r["skill"] for r in match_result["requirements"]]
+    return result
+
+
+def score_ranking(jd_id: str, ranking: list[tuple[str, float]], labels: dict[str, int], cutoff: int) -> dict:
     ranked_ids = [candidate_id for candidate_id, _ in ranking]
     relevant_count = sum(1 for grade in labels.values() if grade >= 1)
     metrics = {
@@ -67,6 +87,8 @@ def compute_metrics(results: list[dict], cutoff: int) -> dict:
     metrics["jd_count"] = count
     metrics["cutoff"] = cutoff
     metrics["avg_candidates_ranked"] = sum(result["details"]["candidates_ranked"] for result in results) / count
+    if all("shortlist_recall" in result["details"] for result in results):
+        metrics["shortlist_recall"] = sum(result["details"]["shortlist_recall"] for result in results) / count
     return metrics
 
 

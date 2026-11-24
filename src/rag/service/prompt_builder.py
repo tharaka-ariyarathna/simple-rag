@@ -31,4 +31,6 @@ class PromptBuilder:
 
     def format_context_block(self, source_number: int, chunk: dict) -> str:
         file_name = Path(chunk["source"]).name
-        return f"[{source_number}] (file: {file_name}, folder: {chunk['folder']})\n{chunk['content'].strip()}"
+        candidate = f"candidate {chunk['candidate_id']}, " if chunk.get("candidate_id") is not None else ""
+        return (f"[{source_number}] ({candidate}file: {file_name}, folder: {chunk['folder']})\n"
+                f"{chunk['content'].strip()}")

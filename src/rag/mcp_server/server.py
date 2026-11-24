@@ -1,5 +1,8 @@
 """MCP adapter: exposes RagService as MCP tools over streamable HTTP.
 
+The MCP client is itself an LLM (often a cloud one), so these tools return candidate ids, never names: the same
+rule as for this server's own LLM calls. Only the REST API puts names back, in the final response.
+
 Run from src:  python -m rag.mcp_server.server   ->  http://127.0.0.1:8001/mcp
 """
 import logging
@@ -80,6 +83,7 @@ def search_documents(
             "file_name": Path(chunk["source"]).name,
             "folder": chunk["folder"],
             "similarity": round(chunk["similarity"], 3),
+            "candidate_id": chunk.get("candidate_id"),
             "content": chunk["content"].strip(),
         }
         for chunk in chunks

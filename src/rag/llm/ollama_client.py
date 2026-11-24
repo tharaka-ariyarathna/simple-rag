@@ -19,8 +19,10 @@ class OllamaLlmClient:
         base_url: str = OLLAMA_BASE_URL,
         model_name: str = OLLAMA_MODEL,
         timeout_seconds: float = LOCAL_LLM_TIMEOUT_SECONDS,
+        json_schema: dict | None = None,  # set: Ollama constrains every reply to this JSON schema (structured output)
     ):
         self.base_url = base_url
+        self.json_schema = json_schema
         self.model_name = model_name
         self.timeout_seconds = timeout_seconds
         self.http_client = httpx.Client(base_url=base_url, timeout=timeout_seconds)
@@ -35,6 +37,8 @@ class OllamaLlmClient:
         "stream": False,
         "options": {"temperature": LLM_TEMPERATURE, "num_ctx": LLM_CONTEXT_TOKENS},
         }
+        if self.json_schema is not None:
+            request_body["format"] = self.json_schema
         # 404 means the model isn't pulled: post_json raises LlmConfigurationError for it
         response_body = post_json(self.http_client, "/api/chat", request_body, "Ollama", self.model_name)
         try:

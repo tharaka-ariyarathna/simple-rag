@@ -11,8 +11,8 @@ EMBEDDING_MODEL_PREFIXES = {
 CHUNK_SIZE_TOKENS = 300
 CHUNK_OVERLAP_TOKENS = 50
 
-# Tried in order: paragraph, line, sentence, word
-CHUNK_SEPARATORS = ["\n\n", "\n", ". ", " "]
+# Tried in order: paragraph, line, sentence, word, then a hard cut between characters
+CHUNK_SEPARATORS = ["\n\n", "\n", ". ", " ", ""]
 
 DB_SCHEMA = "main"
 DB_POOL_MIN_SIZE = 1
@@ -25,6 +25,10 @@ RETRIEVAL_TOP_K = 10  # chunks given to the LLM
 # so 0.4 would let off-topic questions through to the LLM.
 MIN_SIMILARITY = 0.5
 NO_RELEVANT_CONTEXT_ANSWER = "I couldn't find that in the documents."
+# When the search is limited to named candidates, the question is already known to be about them: the threshold
+# only has to drop clearly unrelated chunks. At 0.5, "What is <name>'s current job title?" lost the right chunk
+# (similarity 0.44-0.49, rank 1-5). The answer LLM still refuses when the CV does not answer the question.
+MIN_SIMILARITY_FILTERED = 0.35
 
 # Hybrid search: vector ranking + keyword (Postgres full-text) ranking, merged with reciprocal rank fusion.
 # Keywords only reorder chunks that already passed MIN_SIMILARITY; they never bring in a chunk below it.
@@ -81,6 +85,7 @@ EVAL_TOP_K_MAX = 50  # the retrieval eval may look deeper, e.g. hit@30 to see wh
 # API error responses (details stay generic; full error goes to the server log)
 LLM_UNAVAILABLE_DETAIL = "The language model is unavailable. Please try again later."
 LLM_TIMEOUT_DETAIL = "The language model took too long to answer. Please try again."
+REQUIREMENT_EXTRACTION_FAILED_DETAIL = "Could not read the requirements from the job description. Please try again."
 INTERNAL_ERROR_DETAIL = "Internal server error."  # LlmConfigurationError: our fault (bad key, bad request)
 
 # MCP server (streamable HTTP; port differs from the FastAPI app's 8000)
@@ -113,9 +118,60 @@ MATCHING_CHUNKS_RETRIEVED = 50  # chunks fetched per JD; they are then grouped b
 MATCHING_CUTOFF = 10  # metrics are computed on the top 10 CVs
 MATCHING_MIN_SIMILARITY = 0.0  # ranking, not refusing: the live Q&A path keeps MIN_SIMILARITY
 MATCHING_STRATEGY_WHOLE_JD = "whole_jd"  # the whole JD text is used as one search query
+MATCHING_STRATEGY_GRAPH = "match_graph"  # /match: requirements, per-requirement search, shortlist, LLM judge
 
 # Conversation memory: a follow-up is rewritten into a standalone question before retrieval
 CONVERSATION_HISTORY_MESSAGES = 6  # last messages (questions and answers) the rewriting LLM sees
 CONDENSE_MAX_ATTEMPTS = 2  # first try plus one repair attempt; after that the raw question is used
 CONDENSED_QUESTION_MAX_LENGTH = 300  # a rewrite is a short question; anything longer is probably an answer
 CONVERSATION_ID_MAX_LENGTH = 100
+
+# Section-aware chunking: a line that is exactly one of these headings (case-insensitive, ":" allowed) starts a
+# section; chunks never cross sections. Text before the first heading (name, title line) is the "header" section.
+SECTION_HEADINGS = {
+    "summary": "summary", "profile": "summary", "about": "summary", "about me": "summary",
+    "professional summary": "summary", "objective": "summary",
+    "experience": "experience", "work experience": "experience", "work history": "experience",
+    "employment": "experience", "employment history": "experience", "professional experience": "experience",
+    "education": "education", "qualifications": "education",
+    "skills": "skills", "core skills": "skills", "technical skills": "skills", "tools & platforms": "skills",
+    "tools and platforms": "skills", "technologies": "skills",
+    "projects": "projects", "personal projects": "projects",
+    "certifications": "certifications", "certificates": "certifications", "licenses & certifications": "certifications",
+    "languages": "languages",
+    "awards": "awards", "talks": "awards", "publications": "awards", "volunteering": "awards",
+    "contact": "contact", "contact details": "contact",
+    "references": "referees", "referees": "referees",
+}
+HEADER_SECTION = "header"
+DROPPED_SECTIONS = frozenset({"contact", "referees"})  # personal data (the candidate's or other people's): never indexed
+
+# Candidate profiles: extracted once per CV at ingestion, always by a LOCAL model (raw CVs hold personal data)
+PROFILE_LLM_MODEL = "llama3.2:3b"  # PROFILE_LLM_MODEL in .env overrides it (e.g. qwen2.5:7b if extraction fails often)
+# Canonical skill names, so "k8s" in one CV and "Kubernetes" in another (and in a JD) count as the same skill.
+# Keys are lower-case; a skill not listed is kept as the CV wrote it.
+SKILL_ALIASES = {
+    "k8s": "Kubernetes", "kubernetes": "Kubernetes", "js": "JavaScript", "javascript": "JavaScript",
+    "ts": "TypeScript", "typescript": "TypeScript", "postgres": "PostgreSQL", "postgresql": "PostgreSQL",
+    "node": "Node.js", "nodejs": "Node.js", "node.js": "Node.js", "golang": "Go", "go": "Go",
+    "aws": "AWS", "amazon web services": "AWS", "gcp": "GCP", "google cloud": "GCP", "azure": "Azure",
+    "react": "React", "reactjs": "React", "react.js": "React", "python": "Python", "java": "Java",
+    "c#": "C#", "csharp": "C#", ".net": ".NET", "dotnet": ".NET", "terraform": "Terraform", "docker": "Docker",
+    "ci/cd": "CI/CD", "ml": "Machine Learning", "machine learning": "Machine Learning",
+}
+
+# JD matching (/match): requirements -> search per requirement -> shortlist -> one judge call per candidate -> rank
+JD_MAX_LENGTH = 20000
+MATCH_TOP_N_DEFAULT = 10
+MATCH_TOP_N_MAX = 20
+MATCH_SHORTLIST_SIZE = 10  # candidates the judge LLM reads in full: about 1 + this many LLM calls per JD
+MATCH_CHUNKS_PER_REQUIREMENT = 20  # chunks retrieved for each requirement (hybrid + reranker)
+MATCH_WHOLE_JD_CHUNKS = 50  # one extra vector search with the whole JD, for recall
+MATCH_JUDGE_CONCURRENCY = 1  # judge calls in parallel; Groq's free tier allows 8,000 tokens a minute, so 3 at once
+                             # (about 2k tokens each) pushed most judges onto the weaker fallback models
+MATCH_EXTRACTION_MAX_ATTEMPTS = 2  # first try plus one repair attempt with the validation error
+MUST_HAVE_WEIGHT = 2.0
+NICE_TO_HAVE_WEIGHT = 1.0
+VERDICT_POINTS = {"met": 1.0, "partial": 0.5, "not_found": 0.0}
+MUST_HAVE_CAP = 0.5  # a candidate missing any must-have scores at most this, however strong the rest is
+MATCH_REQUEST_PREVIEW_CHARS = 300  # how much of the JD is kept in the conversation history after a match

@@ -7,6 +7,7 @@ import argparse
 from rag.bootstrap import build_rag_components
 from rag.constants import EVAL_ANSWERABLE_SAMPLE, RETRIEVAL_TOP_K
 from rag.evaluation.run_settings import collect_settings, current_git_commit
+from rag.service.candidate_names import NameResolver
 from rag.evaluation.unanswerable_eval import (
     CATEGORY_ANSWERABLE, OUTCOME_ANSWERED, OUTCOME_REFUSED, ask, compute_metrics, judge,
     load_unanswerable_questions, sample_answerable_questions,
@@ -61,7 +62,7 @@ def run_unanswerable_eval(answerable_sample: int, top_k: int) -> bool:
         run_id = eval_repository.start_run(KIND, settings, current_git_commit())
         results = []
         for position, case in enumerate(cases, start=1):
-            results.append(ask(components.rag_service, case, top_k, run_id))
+            results.append(ask(components.rag_service, case, top_k, run_id, NameResolver(components.candidate_repository)))
             print(f"  {position}/{len(cases)} {results[-1]['outcome']:<9} [{case['category']}] {case['question'][:70]}")
 
         metrics = compute_metrics(results)

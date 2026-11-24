@@ -26,12 +26,25 @@ def first_rank_containing(chunks: list[dict], evidence: str) -> int | None:
     return None
 
 
-def evaluate_case(rag_service: RagService, case: RetrievalCase, all_chunks: list[dict], top_k: int) -> dict:
+def resolved_search(resolver, question: str) -> tuple[str, dict]:
+    """What /chat searches with: names replaced by "candidate N" and the search limited to those candidates.
+    Chunks are redacted, so searching for the raw name would not measure the real chat path."""
+    if resolver is None:
+        return question, {}
+    resolution = resolver.resolve(question)
+    if resolution.clarification or not resolution.candidate_ids:
+        return question if resolution.clarification else resolution.question, {}
+    return resolution.question, {"candidate_ids": resolution.candidate_ids}
+
+
+def evaluate_case(rag_service: RagService, case: RetrievalCase, all_chunks: list[dict], top_k: int,
+                  resolver=None) -> dict:
     """Runs retrieval only (no LLM) and checks where the evidence chunk lands."""
     if not any(contains_evidence(chunk["content"], case.evidence) for chunk in all_chunks):
         return {"question": case.question, "outcome": OUTCOME_UNMATCHABLE, "details": {"source": case.source}}
 
-    retrieved = rag_service.search_chunks(case.question, None, top_k)
+    question, filters = resolved_search(resolver, case.question)
+    retrieved = rag_service.search_chunks(question, None, top_k, **filters)
     rank = first_rank_containing(retrieved, case.evidence)
     file_hit = any(chunk["source"] == case.source for chunk in retrieved)
     details = {"source": case.source, "file_hit": file_hit, "retrieved_count": len(retrieved)}
@@ -41,7 +54,7 @@ def evaluate_case(rag_service: RagService, case: RetrievalCase, all_chunks: list
                 "similarity": similarity, "details": details}
 
     # Missed: would it have been found without the similarity threshold?
-    unfiltered = rag_service.search_chunks(case.question, None, top_k, min_similarity=0.0)
+    unfiltered = rag_service.search_chunks(question, None, top_k, min_similarity=0.0, **filters)
     unfiltered_rank = first_rank_containing(unfiltered, case.evidence)
     if unfiltered_rank is not None:
         details["rank_without_threshold"] = unfiltered_rank
