@@ -1,4 +1,3 @@
-import pytest
 from rag.indexing.chunker import TokenChunker
 from tests.fakes import CharTokenizer, WordTokenizer
 
@@ -53,17 +52,15 @@ def test_chunks_stay_within_size_plus_overlap_and_lose_no_words():
 def test_hard_cut_by_tokens_when_no_separator_is_left():
     chunker = TokenChunker(CharTokenizer(), chunk_size=4, chunk_overlap=0)
 
-    assert chunker.split_into_pieces("abcdefghij", separators=[]) == ["abcd", "efgh", "ij"]
+    assert chunker.chunk_text("abcdefghij") == ["abcd", "efgh", "ij"]
 
 
 def test_blank_parts_between_separators_are_dropped():
-    chunker = TokenChunker(WordTokenizer(), chunk_size=1, chunk_overlap=0)
+    chunker = TokenChunker(WordTokenizer(), chunk_size=3, chunk_overlap=0)
 
-    assert words_of(chunker.chunk_text("alpha\n\n\n\n\n\nbeta")) == [["alpha"], ["beta"]]
+    assert words_of(chunker.chunk_text("alpha one\n\n\n\n\n\nbeta two")) == [["alpha", "one"], ["beta", "two"]]
 
 
-@pytest.mark.xfail(strict=True, reason="Known bug: split_into_pieces appends the separator to the last part too, "
-                                       "so splitting on '. ' adds a full stop the document never had")
 def test_chunking_does_not_add_text_that_is_not_in_the_document():
     chunker = TokenChunker(WordTokenizer(), chunk_size=3, chunk_overlap=0)
     text = "one two three. four five six"  # no full stop after "six"

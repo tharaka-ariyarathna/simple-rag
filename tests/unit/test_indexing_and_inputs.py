@@ -9,16 +9,12 @@ import pytest
 from rag.constants import BGE_QUERY_PREFIX
 from rag.embedding import sentence_transformer_embedder
 from rag.evaluation import matching_dataset, run_settings
-from tests.fakes import FakeEmbedder, FakeReranker, WordTokenizer, unit_vector
-from rag.indexing.chunker import TokenChunker
+from tests.fakes import FakeEmbedder, FakeReranker, unit_vector
 
 
 @pytest.fixture(scope="module")
 def pipeline():
-    # indexing_pipeline reads DATABASE_URL when it is imported, so it needs a value before the import
-    with pytest.MonkeyPatch.context() as monkeypatch:
-        monkeypatch.setenv("DATABASE_URL", "postgresql://unused-by-these-tests")
-        yield importlib.import_module("rag.indexing.indexing_pipeline")
+    return importlib.import_module("rag.indexing.indexing_pipeline")
 
 
 class TestIndexingPipeline:
@@ -33,17 +29,8 @@ class TestIndexingPipeline:
 
         documents = pipeline.load_documents(str(tmp_path))
 
-        assert dict(documents) == {"cvs": [{"source": str(tmp_path / "cvs" / "alice.pdf"), "content": "Alice CV text"}]}
-
-    def test_chunk_documents_numbers_chunks_per_document(self, pipeline):
-        chunker = TokenChunker(WordTokenizer(), chunk_size=2, chunk_overlap=0)
-        documents = {"cvs": [{"source": "a.pdf", "content": "one two\n\nthree"},
-                             {"source": "b.pdf", "content": "four"}]}
-
-        rows = pipeline.chunk_documents(documents, chunker)
-
-        assert [(row["source"], row["folder"], row["chunk_index"]) for row in rows] == [
-            ("a.pdf", "cvs", 0), ("a.pdf", "cvs", 1), ("b.pdf", "cvs", 0)]
+        assert documents == [{"source": str(tmp_path / "cvs" / "alice.pdf"), "folder": "cvs",
+                              "content": "Alice CV text"}]
 
     def test_embed_chunk_rows_attaches_each_vector_to_its_row(self, pipeline):
         embedder = FakeEmbedder({"alpha": unit_vector(1, 0, 0), "beta": unit_vector(0, 1, 0)})

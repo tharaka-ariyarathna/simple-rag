@@ -20,11 +20,17 @@ from rag.llm.openai_compatible_client import OpenAiCompatibleLlmClient
 from rag.llm.retrying_client import RetryingLlmClient
 from rag.memory.condenser import QuestionCondenser
 from rag.memory.conversation_graph import ConversationGraph
+from rag.memory.follow_up import FollowUpRouter
+from rag.matching.judge import CandidateJudge
+from rag.matching.match_graph import MatchGraph
+from rag.matching.requirements import RequirementExtractor
 from rag.reranking.base import Reranker
 from rag.reranking.cross_encoder_reranker import CrossEncoderReranker
+from rag.repository.candidate_repository import CandidateRepository
 from rag.repository.chunk_repository import ChunkRepository
 from rag.repository.db import Database
 from rag.repository.ledger_repository import LedgerRepository
+from rag.service.candidate_names import NameResolver
 from rag.service.keyword_query import KeywordQueryBuilder
 from rag.service.prompt_builder import PromptBuilder
 from rag.service.rag_service import RagService
@@ -52,6 +58,8 @@ class RagComponents:
     llm_client: LlmClient
     conversation_graph: ConversationGraph
     checkpoint_pool: ConnectionPool
+    candidate_repository: CandidateRepository
+    match_graph: MatchGraph
 
     def close(self) -> None:
         self.llm_client.close()
@@ -195,9 +203,15 @@ def build_rag_components() -> RagComponents:
         reranker=build_reranker(os.environ),
     )
     checkpointer, checkpoint_pool = build_checkpointer(os.environ["DATABASE_URL"])
-    conversation_graph = ConversationGraph(rag_service, QuestionCondenser(llm_client), checkpointer)
+    candidate_repository = CandidateRepository(database)
+    conversation_graph = ConversationGraph(rag_service, QuestionCondenser(llm_client), checkpointer,
+                                           resolver=NameResolver(candidate_repository),
+                                           router=FollowUpRouter(llm_client))
     return RagComponents(rag_service=rag_service, database=database, llm_client=llm_client,
-                         conversation_graph=conversation_graph, checkpoint_pool=checkpoint_pool)
+                         conversation_graph=conversation_graph, checkpoint_pool=checkpoint_pool,
+                         candidate_repository=candidate_repository,
+                         match_graph=MatchGraph(rag_service, candidate_repository, RequirementExtractor(llm_client),
+                                                CandidateJudge(llm_client)))
 
 
 def build_question_generation_components() -> QuestionGenerationComponents:

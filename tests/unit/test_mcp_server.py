@@ -46,7 +46,7 @@ def test_search_documents_returns_only_what_the_model_needs():
 
     passages = server.search_documents(context_with(service), "  python?  ", folder="cvs", top_k=2)
 
-    assert passages == [{"file_name": "alice.pdf", "folder": "cvs", "similarity": 0.877,
+    assert passages == [{"file_name": "alice.pdf", "folder": "cvs", "similarity": 0.877, "candidate_id": None,
                          "content": "Alice knows Python."}]
     assert service.calls == [("search", "python?", "cvs", 2)]
 
@@ -58,7 +58,8 @@ def test_answer_question_returns_the_answer_as_a_dict_and_marks_the_entry_point(
     result = server.answer_question(context_with(service), " who? ", folder=None, top_k=5)
 
     assert result == {"answer": "Alice [1].", "sources": [{"file_name": "alice.pdf", "folder": "cvs",
-                                                           "similarity": 0.9}], "refusal_reason": None}
+                                                           "similarity": 0.9, "candidate_id": None}],
+                      "refusal_reason": None}
     assert service.calls == [("answer", "who?", None, 5, "mcp")]
 
 

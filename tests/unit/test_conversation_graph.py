@@ -144,3 +144,85 @@ def test_a_failed_turn_is_not_remembered():
     setup.ask("Who knows React?", first.conversation_id)
 
     assert "Who knows Go?" not in setup.rewriter.calls[-1]
+
+
+# --- names, clarification and follow-ups after a match ---------------------------------------------------------
+
+from rag.memory.follow_up import FollowUpRouter  # noqa: E402
+from rag.service.candidate_names import NameResolver  # noqa: E402
+from tests.unit.test_candidate_names import PEOPLE, FakeDirectory  # noqa: E402
+
+MATCH = {"requirements": [{"skill": "Spark", "must_have": True}],
+         "candidates": [{"candidate_id": 17, "score": 0.9,
+                         "verdicts": [{"requirement": "Spark", "verdict": "met", "evidence": "Spark pipelines"}]},
+                        {"candidate_id": 23, "score": 0.4,
+                         "verdicts": [{"requirement": "Spark", "verdict": "not_found", "evidence": ""}]}]}
+
+
+class NamedSetup(Setup):
+    def __init__(self, *script, router_script=()):
+        super().__init__(*script)
+        self.router_llm = ScriptedLlm(*router_script)
+        service = self.graph.rag_service
+        self.graph = ConversationGraph(service, QuestionCondenser(self.rewriter), self.checkpointer,
+                                       resolver=NameResolver(FakeDirectory(PEOPLE)),
+                                       router=FollowUpRouter(self.router_llm))
+
+
+def test_a_named_question_is_searched_only_in_that_candidates_cv_and_the_name_never_reaches_the_llm():
+    setup = NamedSetup()
+
+    result = setup.ask("What is Leah Walsh's Spark experience?")
+
+    assert setup.repository.search_calls[0]["candidate_ids"] == [23]
+    assert result.standalone_question == "What is candidate 23's Spark experience?"
+    assert "Leah" not in setup.answerer.calls[0]["user"] and "Walsh" not in setup.answerer.calls[0]["user"]
+    state = setup.checkpointer.get_tuple(setup.graph.config(result.conversation_id)).checkpoint["channel_values"]
+    assert "Leah" not in str(state["messages"])  # not even in the stored history
+
+
+def test_an_ambiguous_name_gets_a_clarifying_question_without_any_llm_call():
+    setup = NamedSetup()
+
+    result = setup.ask("What does Ines Brooks know?")
+
+    assert "candidate 17" in result.rag_answer.answer and "candidate 52" in result.rag_answer.answer
+    assert setup.answerer.calls == [] and setup.repository.search_calls == []
+
+
+def test_a_pronoun_follow_up_keeps_searching_the_same_candidate():
+    setup = NamedSetup(rewrite("What is candidate 23's Java experience?"))
+    first = setup.ask("What is Leah Walsh's Spark experience?")
+
+    setup.ask("What about her Java?", first.conversation_id)
+
+    assert setup.repository.search_calls[1]["candidate_ids"] == [23]
+
+
+def test_after_a_match_a_follow_up_the_result_answers_skips_the_search():
+    setup = NamedSetup(router_script=['{"route": "from_result"}', "Candidate 17 has Spark pipelines; 23 lacks Spark."])
+    setup.graph.remember_match("m1", "Match this JD", MATCH, "Ranked 2 candidates: candidate 17, candidate 23.")
+
+    result = setup.ask("Why is candidate 17 above candidate 23?", "m1")
+
+    assert result.rag_answer.answer.startswith("Candidate 17 has Spark")
+    assert setup.repository.search_calls == [] and setup.rewriter.calls == []
+    assert '"candidate": 17' in setup.router_llm.calls[0]  # the router saw the ranking, by id
+
+
+def test_after_a_match_a_cv_detail_question_is_searched_in_that_candidates_cv():
+    setup = NamedSetup(rewrite("Does candidate 17 know Terraform?"), router_script=['{"route": "search_candidate"}'])
+    setup.graph.remember_match("m1", "Match this JD", MATCH, "Ranked 2 candidates: candidate 17, candidate 23.")
+
+    setup.ask("Does candidate 17 know Terraform?", "m1")
+
+    assert setup.repository.search_calls[0]["candidate_ids"] == [17]
+
+
+def test_an_unusable_route_falls_back_to_searching():
+    setup = NamedSetup(rewrite("Does candidate 17 know Terraform?"), router_script=["no idea"])
+    setup.graph.remember_match("m1", "Match this JD", MATCH, "Ranked 2 candidates: candidate 17, candidate 23.")
+
+    setup.ask("Does candidate 17 know Terraform?", "m1")
+
+    assert len(setup.repository.search_calls) == 1

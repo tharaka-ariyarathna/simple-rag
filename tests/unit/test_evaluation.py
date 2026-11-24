@@ -215,3 +215,15 @@ class TestMatchingEval:
         passed, problems = matching_eval.judge(metrics, {"ndcg_at_k": 0.7, "recall_at_k": 0.7})
         assert not passed and "ndcg_at_k dropped" in problems[0]
         assert matching_eval.judge({"jd_count": 0}, None)[0] is False
+
+
+def test_evals_resolve_names_like_chat_does():
+    from rag.evaluation.retrieval_eval import resolved_search
+    from rag.service.candidate_names import NameResolver
+    from tests.unit.test_candidate_names import PEOPLE, FakeDirectory
+    resolver = NameResolver(FakeDirectory(PEOPLE))
+
+    assert resolved_search(resolver, "What does Leah Walsh know?") == ("What does candidate 23 know?",
+                                                                       {"candidate_ids": [23]})
+    assert resolved_search(resolver, "Who knows Go?") == ("Who knows Go?", {})
+    assert resolved_search(None, "What does Leah Walsh know?") == ("What does Leah Walsh know?", {})
