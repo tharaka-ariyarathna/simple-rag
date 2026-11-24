@@ -1,8 +1,25 @@
 import re
 import numpy as np
 from psycopg import sql
+from psycopg.types.json import Jsonb
 from rag.repository.db import Database
 from rag.constants import HYBRID_VECTOR_CANDIDATES, MIN_SIMILARITY, RETRIEVAL_TOP_K, RRF_K
+
+
+def insert_chunks(connection, chunk_rows: list[dict], embedding_model: str) -> None:
+    """Inserts rows on a connection the caller owns, so it can share a transaction (see CandidateRepository).
+    candidate_id and metadata are optional, for rows indexed without a candidate (tests, other document types)."""
+    with connection.cursor() as cursor:
+        cursor.executemany(
+            """INSERT INTO chunks (source, folder, chunk_index, content, embedding_model, embedding, candidate_id, metadata)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s)""",
+            [
+                (chunk_row["source"], chunk_row["folder"], chunk_row["chunk_index"], chunk_row["content"],
+                 embedding_model, chunk_row["embedding"], chunk_row.get("candidate_id"),
+                 Jsonb(chunk_row.get("metadata") or {}))
+                for chunk_row in chunk_rows
+            ],
+        )
 
 
 class ChunkRepository:
@@ -41,16 +58,7 @@ class ChunkRepository:
                 "DELETE FROM chunks WHERE source = ANY(%s) AND embedding_model = %s",
                 (sources, embedding_model),
             )
-            with connection.cursor() as cursor:
-                cursor.executemany(
-                    """INSERT INTO chunks (source, folder, chunk_index, content, embedding_model, embedding)
-                       VALUES (%s, %s, %s, %s, %s, %s)""",
-                    [
-                        (chunk_row["source"], chunk_row["folder"], chunk_row["chunk_index"],
-                         chunk_row["content"], embedding_model, chunk_row["embedding"])
-                        for chunk_row in chunk_rows
-                    ],
-                )
+            insert_chunks(connection, chunk_rows, embedding_model)
         print(f"Saved {len(chunk_rows)} chunks from {len(sources)} files for {embedding_model}.")
 
     def search_similar(
@@ -62,6 +70,7 @@ class ChunkRepository:
         folder: str | None = None,
         min_similarity: float = MIN_SIMILARITY,
         keyword_terms: list[str] | None = None,
+        candidate_ids: list[int] | None = None,  # only these candidates' chunks (a name in the question, a match)
     ) -> list[dict]:
         """Hybrid search: chunks ranked by cosine similarity and, when keyword_terms are given, by full-text match,
         merged with reciprocal rank fusion (RRF). similarity = 1 - cosine distance.
@@ -84,6 +93,7 @@ class ChunkRepository:
                    SELECT id, {distance} AS distance FROM chunks
                    WHERE embedding_model = %(embedding_model)s
                      AND (%(folder)s::text IS NULL OR folder = %(folder)s)
+                     AND (%(candidate_ids)s::bigint[] IS NULL OR candidate_id = ANY(%(candidate_ids)s))
                    ORDER BY {distance}
                    LIMIT %(vector_candidates)s
                ),
@@ -100,9 +110,10 @@ class ChunkRepository:
                      AND search_vector @@ keyword_query.query
                      AND embedding_model = %(embedding_model)s
                      AND (%(folder)s::text IS NULL OR folder = %(folder)s)
+                     AND (%(candidate_ids)s::bigint[] IS NULL OR candidate_id = ANY(%(candidate_ids)s))
                      AND 1 - {distance} >= %(min_similarity)s
                )
-               SELECT source, folder, chunk_index, content, 1 - {distance} AS similarity,
+               SELECT source, folder, chunk_index, content, candidate_id, 1 - {distance} AS similarity,
                       vector_rank, keyword_rank,
                       -- float8, or psycopg returns numeric arithmetic as Decimal
                       (coalesce(1.0 / (%(rrf_k)s + vector_rank), 0)
@@ -118,11 +129,16 @@ class ChunkRepository:
             # An HNSW index scan returns at most hnsw.ef_search rows (default 40), fewer than the candidates asked for
             connection.execute("SELECT set_config('hnsw.ef_search', %s, true)",
                                (str(max(HYBRID_VECTOR_CANDIDATES, top_k)),))
+            if candidate_ids:
+                # HNSW finds its nearest rows before the WHERE: with a strict filter it would return too few.
+                # pgvector 0.8 iterative scan keeps scanning until enough rows pass (the outer query re-sorts).
+                connection.execute("SELECT set_config('hnsw.iterative_scan', 'relaxed_order', true)")
             return connection.execute(
                 query,
                 {"query_vector": query_vector, "embedding_model": embedding_model, "folder": folder,
                  "top_k": top_k, "min_similarity": min_similarity, "keyword_terms": keyword_terms or [],
-                 "vector_candidates": max(HYBRID_VECTOR_CANDIDATES, top_k), "rrf_k": RRF_K},
+                 "vector_candidates": max(HYBRID_VECTOR_CANDIDATES, top_k), "rrf_k": RRF_K,
+                 "candidate_ids": list(candidate_ids) if candidate_ids else None},
             ).fetchall()
 
     def question_lexemes(self, question: str) -> list[str]:

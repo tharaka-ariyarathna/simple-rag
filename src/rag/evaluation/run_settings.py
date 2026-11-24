@@ -27,4 +27,5 @@ def collect_settings(components: RagComponents, top_k: int) -> dict:
         "keyword_search": rag_service.keyword_query_builder is not None,
         "reranker_model": rag_service.reranker.model_name if rag_service.reranker is not None else None,
         "rerank_candidates": rag_service.rerank_candidates if rag_service.reranker is not None else None,
+        "chunking": "sections+redaction",  # chunks are section-aware and redacted; names are resolved to ids
     }

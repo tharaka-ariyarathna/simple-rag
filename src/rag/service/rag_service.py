@@ -6,7 +6,7 @@ from rag.llm.base import LlmClient
 from rag.llm.call_context import llm_call_context
 from rag.repository.chunk_repository import ChunkRepository
 from rag.repository.ledger_repository import LedgerRepository
-from rag.constants import NO_RELEVANT_CONTEXT_ANSWER, RERANK_CANDIDATES
+from rag.constants import MIN_SIMILARITY_FILTERED, NO_RELEVANT_CONTEXT_ANSWER, RERANK_CANDIDATES
 from rag.reranking.base import Reranker
 from rag.embedding.base import EmbeddingModel
 from rag.service.keyword_query import KeywordQueryBuilder
@@ -23,6 +23,7 @@ class SourceReference:
     file_name: str
     folder: str
     similarity: float
+    candidate_id: int | None = None  # names are not in the chunks: the API maps the id to a name
 
 
 @dataclass
@@ -73,10 +74,12 @@ class RagService:
         eval_run_id: int | None = None,
         conversation_id: str | None = None,
         standalone_question: str | None = None,  # a follow-up rewritten to make sense alone: searched instead
+        candidate_ids: list[int] | None = None,  # only search these candidates' CVs
     ) -> RagAnswer:
         started_at = time.perf_counter()
         question_to_answer = standalone_question or question
-        chunks = self.search_chunks(question_to_answer, folder, top_k)
+        chunks = self.search_chunks(question_to_answer, folder, top_k, candidate_ids=candidate_ids)
+        search_ms = int((time.perf_counter() - started_at) * 1000)
         rag_request_id = self.record_request_start(
             entry_point, question, folder, top_k, chunks, eval_run_id, conversation_id,
             standalone_question if standalone_question and standalone_question != question else None,
@@ -89,15 +92,19 @@ class RagService:
                 answer_text = NO_RELEVANT_CONTEXT_ANSWER
                 return RagAnswer(answer=answer_text, refusal_reason=refusal_reason)
             prompt = self.prompt_builder.build(question_to_answer, chunks)
+            llm_started_at = time.perf_counter()
             with llm_call_context("answer", rag_request_id):
                 answer_text = self.llm_client.generate(prompt.system, prompt.user).text
+            logger.info("Timing: search %d ms, answer LLM %d ms", search_ms,
+                        int((time.perf_counter() - llm_started_at) * 1000))
             if answer_text.strip() == NO_RELEVANT_CONTEXT_ANSWER:
                 refusal_reason = REFUSAL_REASON_LLM
             sources_by_file: dict[str, SourceReference] = {}
             for chunk in chunks:
                 file_name = Path(chunk["source"]).name
                 if file_name not in sources_by_file:
-                    sources_by_file[file_name] = SourceReference(file_name, chunk["folder"], chunk["similarity"])
+                    sources_by_file[file_name] = SourceReference(file_name, chunk["folder"], chunk["similarity"],
+                                                                 chunk.get("candidate_id"))
             return RagAnswer(
                 answer=answer_text, sources=list(sources_by_file.values()), refusal_reason=refusal_reason
             )
@@ -106,14 +113,17 @@ class RagService:
 
     def search_chunks(
         self, question: str, folder: str | None, top_k: int, min_similarity: float | None = None,
-        use_keywords: bool = True, use_reranker: bool = True,
+        use_keywords: bool = True, use_reranker: bool = True, candidate_ids: list[int] | None = None,
     ) -> list[dict]:
         """Retrieval only (no LLM): the most relevant chunks above the similarity threshold, best first.
         min_similarity overrides the default threshold (evaluation passes 0 to see what the threshold hides).
         use_keywords=False forces vector-only search and use_reranker=False keeps the search order
         (JD matching: a whole JD is neither a keyword query nor short enough for the reranker)."""
         rerank = use_reranker and self.reranker is not None
+        started_at = time.perf_counter()
         query_vector = self.embedder.embed_query(question)
+        if min_similarity is None and candidate_ids:
+            min_similarity = MIN_SIMILARITY_FILTERED
         threshold = {} if min_similarity is None else {"min_similarity": min_similarity}
         keyword_terms = (
             self.keyword_query_builder.terms_for(question, self.embedder.model_name)
@@ -128,8 +138,15 @@ class RagService:
             folder=folder,
             keyword_terms=keyword_terms,
             **threshold,
+            **({"candidate_ids": candidate_ids} if candidate_ids else {}),
         )
-        return self.rerank(question, chunks)[:top_k] if rerank else chunks
+        searched_at = time.perf_counter()
+        if not rerank:
+            return chunks
+        reranked = self.rerank(question, chunks)[:top_k]
+        logger.info("Timing: hybrid search %d ms, rerank of %d chunks %d ms", int((searched_at - started_at) * 1000),
+                    len(chunks), int((time.perf_counter() - searched_at) * 1000))
+        return reranked
 
     def rerank(self, question: str, chunks: list[dict]) -> list[dict]:
         """Candidates reordered by the reranker, best first. Each gets a rerank_score; similarity is unchanged."""
